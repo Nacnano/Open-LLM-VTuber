@@ -35,6 +35,7 @@ class TTSTaskManager:
         live2d_model: Live2dModel,
         tts_engine: TTSInterface,
         websocket_send: WebSocketSend,
+        audio_recorder: Optional[any] = None,
     ) -> None:
         """
         Queue a TTS task while maintaining order of delivery.
@@ -46,8 +47,9 @@ class TTSTaskManager:
             live2d_model: Live2D model instance
             tts_engine: TTS engine instance
             websocket_send: WebSocket send function
+            audio_recorder: Optional AudioRecorder instance for dual-channel recording
         """
-        if len(re.sub(r'[\s.,!?，。！？\'"』」）】\s]+', "", tts_text)) == 0:
+        if len(re.sub(r'[\s.,!?،。！？\'"』」）】\s]+', "", tts_text)) == 0:
             logger.debug("Empty TTS text, sending silent display payload")
             # Get current sequence number for silent payload
             current_sequence = self._sequence_counter
@@ -85,6 +87,7 @@ class TTSTaskManager:
                 live2d_model=live2d_model,
                 tts_engine=tts_engine,
                 sequence_number=current_sequence,
+                audio_recorder=audio_recorder,
             )
         )
         self.task_list.append(task)
@@ -135,11 +138,17 @@ class TTSTaskManager:
         live2d_model: Live2dModel,
         tts_engine: TTSInterface,
         sequence_number: int,
+        audio_recorder: Optional[any] = None,
     ) -> None:
         """Process TTS generation and queue the result for ordered delivery"""
         audio_file_path = None
         try:
             audio_file_path = await self._generate_audio(tts_engine, tts_text)
+
+            # Record TTS audio if recording is enabled
+            if audio_recorder and audio_file_path:
+                await audio_recorder.add_tts_audio(audio_file_path)
+
             payload = prepare_audio_payload(
                 audio_path=audio_file_path,
                 display_text=display_text,

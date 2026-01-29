@@ -252,6 +252,10 @@ class WebSocketHandler:
             logger.warning("Message received without type")
             return
 
+        # Log audio-related messages for debugging
+        if "audio" in msg_type:
+            logger.debug(f"🔊 Routing audio message: type={msg_type}")
+
         handler = self._message_handlers.get(msg_type)
         if handler:
             await handler(websocket, client_uid, data)
@@ -297,6 +301,12 @@ class WebSocketHandler:
             send_group_update=self.send_group_update,
         )
 
+        # Call context close to clean up resources BEFORE removing from dictionary
+        # This ensures recordings are saved properly
+        context = self.client_contexts.get(client_uid)
+        if context:
+            await context.close()
+
         # Clean up other client data
         self.client_connections.pop(client_uid, None)
         self.client_contexts.pop(client_uid, None)
@@ -306,11 +316,6 @@ class WebSocketHandler:
             if task and not task.done():
                 task.cancel()
             self.current_conversation_tasks.pop(client_uid, None)
-
-        # Call context close to clean up resources (e.g., MCPClient)
-        context = self.client_contexts.get(client_uid)
-        if context:
-            await context.close()
 
         logger.info(f"Client {client_uid} disconnected")
         message_handler.cleanup_client(client_uid)
@@ -481,10 +486,36 @@ class WebSocketHandler:
         """Handle incoming audio data"""
         audio_data = data.get("audio", [])
         if audio_data:
+            audio_array = np.array(audio_data, dtype=np.float32)
+
+            # Log audio statistics for debugging
+            logger.debug(
+                f"🎤 Received audio: {len(audio_data)} samples, "
+                f"min={audio_array.min():.4f}, max={audio_array.max():.4f}, "
+                f"mean={np.abs(audio_array).mean():.4f}"
+            )
+
+            # Normalize if values are in int16 range (not already normalized)
+            # Check if values are outside the normalized range [-1, 1]
+            if np.abs(audio_array).max() > 1.0:
+                logger.info(
+                    f"🔧 Normalizing audio from int16 range (max: {np.abs(audio_array).max():.1f})"
+                )
+                audio_array = audio_array / 32768.0
+                logger.debug(
+                    f"✅ After normalization: min={audio_array.min():.4f}, max={audio_array.max():.4f}"
+                )
+
             self.received_data_buffers[client_uid] = np.append(
                 self.received_data_buffers[client_uid],
-                np.array(audio_data, dtype=np.float32),
+                audio_array,
             )
+
+            # Record user audio if recording is enabled
+            context = self.client_contexts.get(client_uid)
+            if context and context.audio_recorder:
+                await context.audio_recorder.add_user_audio(audio_array)
+                logger.debug(f"📼 Added {len(audio_array)} samples to recorder")
 
     async def _handle_raw_audio_data(
         self, websocket: WebSocket, client_uid: str, data: WSMessage
@@ -502,10 +533,20 @@ class WebSocketHandler:
                     pass
                 elif len(audio_bytes) > 1024:
                     # Detected audio activity (voice)
+                    # Convert int16 to float32 and normalize to [-1, 1] range
+                    audio_array = (
+                        np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+                        / 32768.0
+                    )
                     self.received_data_buffers[client_uid] = np.append(
                         self.received_data_buffers[client_uid],
-                        np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32),
+                        audio_array,
                     )
+
+                    # Record user audio if recording is enabled
+                    if context.audio_recorder:
+                        await context.audio_recorder.add_user_audio(audio_array)
+
                     await websocket.send_text(
                         json.dumps({"type": "control", "text": "mic-audio-end"})
                     )

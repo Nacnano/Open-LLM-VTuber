@@ -23,6 +23,7 @@ from .tts.tts_factory import TTSFactory
 from .vad.vad_factory import VADFactory
 from .agent.agent_factory import AgentFactory
 from .translate.translate_factory import TranslateFactory
+from .utils.audio_recorder import AudioRecorder
 
 from .config_manager import (
     Config,
@@ -71,6 +72,9 @@ class ServiceContext:
 
         self.send_text: Callable = None
         self.client_uid: str = None
+
+        # Audio recorder for dual-channel recording
+        self.audio_recorder: AudioRecorder | None = None
 
     def __str__(self):
         return (
@@ -190,6 +194,32 @@ class ServiceContext:
     async def close(self):
         """Clean up resources, especially the MCPClient."""
         logger.info("Closing ServiceContext resources...")
+
+        # Save recording if enabled and has audio
+        if self.audio_recorder and self.audio_recorder.has_audio():
+            try:
+                conf_uid = (
+                    self.character_config.conf_uid
+                    if self.character_config
+                    else "unknown"
+                )
+                history_uid = self.history_uid if self.history_uid else None
+                output_dir = (
+                    self.system_config.recording_output_dir
+                    if self.system_config
+                    else "recordings"
+                )
+
+                filename = AudioRecorder.generate_filename(
+                    conf_uid=conf_uid, history_uid=history_uid, output_dir=output_dir
+                )
+
+                logger.info("💾 Saving recording before closing...")
+                await self.audio_recorder.save_recording(filename)
+                await self.audio_recorder.clear()
+            except Exception as e:
+                logger.error(f"❌ Error saving recording on close: {e}")
+
         if self.mcp_client:
             logger.info(f"Closing MCPClient for context instance {id(self)}...")
             await self.mcp_client.aclose()
@@ -237,6 +267,14 @@ class ServiceContext:
         self.tool_adapter = tool_adapter
         self.send_text = send_text
         self.client_uid = client_uid
+
+        # Initialize audio recorder if recording is enabled
+        # Each session needs its own recorder instance
+        if system_config.enable_recording:
+            logger.info("📼 Initializing Audio Recorder for session")
+            self.audio_recorder = AudioRecorder(sample_rate=16000)
+        else:
+            self.audio_recorder = None
 
         # Initialize session-specific MCP components
         await self._init_mcp_components(
@@ -305,6 +343,13 @@ class ServiceContext:
         self.init_translate(
             config.character_config.tts_preprocessor_config.translator_config
         )
+
+        # Initialize audio recorder if recording is enabled
+        if config.system_config.enable_recording:
+            logger.info("📼 Initializing Audio Recorder")
+            self.audio_recorder = AudioRecorder(sample_rate=16000)
+        else:
+            self.audio_recorder = None
 
         # store typed config references
         self.config = config

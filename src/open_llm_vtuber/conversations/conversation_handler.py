@@ -66,6 +66,23 @@ async def handle_conversation_trigger(
         user_input = data.get("text", "")
     else:  # mic-audio-end
         user_input = received_data_buffers[client_uid]
+
+        # Record user audio if recording is enabled
+        # Backdate the timestamp based on audio duration so it's placed correctly in timeline
+        if context.audio_recorder and len(user_input) > 0:
+            # Calculate audio duration in seconds
+            audio_duration = len(user_input) / 16000.0  # Assuming 16kHz sample rate
+
+            # Backdate timestamp so audio starts at (current_time - duration)
+            # This ensures user audio doesn't overlap with TTS that comes after
+            await context.audio_recorder.add_user_audio(
+                user_input, backdate_seconds=audio_duration
+            )
+            logger.info(
+                f"📼 Recorded {len(user_input)} samples ({audio_duration:.2f}s) "
+                f"of user audio for conversation"
+            )
+
         received_data_buffers[client_uid] = np.array([])
 
     images = data.get("images")
@@ -120,6 +137,10 @@ async def handle_individual_interrupt(
         if task and not task.done():
             task.cancel()
             logger.info("🛑 Conversation task was successfully interrupted")
+
+        # Handle Interruption for Audio Recorder (truncates TTS)
+        if context.audio_recorder:
+            await context.audio_recorder.handle_interruption(time.time())
 
         try:
             context.agent_engine.handle_interrupt(heard_response)
@@ -186,6 +207,11 @@ async def handle_group_interrupt(
             if member_uid in client_contexts:
                 try:
                     member_ctx = client_contexts[member_uid]
+
+                    # Handle Interruption for Audio Recorder (truncates TTS)
+                    if member_ctx.audio_recorder:
+                        await member_ctx.audio_recorder.handle_interruption(time.time())
+
                     member_ctx.agent_engine.handle_interrupt(heard_response)
                     store_message(
                         conf_uid=member_ctx.character_config.conf_uid,
