@@ -3,6 +3,7 @@ import json
 from uuid import uuid4
 import numpy as np
 from datetime import datetime
+from pathlib import Path
 from fastapi import APIRouter, WebSocket, UploadFile, File, Response
 from starlette.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
@@ -137,6 +138,79 @@ def init_webtool_routes(default_context_cache: ServiceContext) -> APIRouter:
                 "characters": valid_characters,
             }
         )
+
+    @router.post("/upload-video")
+    async def upload_video(file: UploadFile = File(...)):
+        """
+        Endpoint for uploading recorded video from webcam.
+
+        Args:
+            file: The video file uploaded from the client.
+
+        Returns:
+            JSONResponse: Success message with saved file path or error message.
+        """
+        logger.info(f"📹 Received video file for upload: {file.filename}")
+
+        try:
+            # Create recorded_videos directory if it doesn't exist
+            video_dir = Path("recorded_videos")
+            video_dir.mkdir(exist_ok=True)
+
+            # Validate file type
+            allowed_types = ["video/webm", "video/mp4", "video/mpeg"]
+            if file.content_type not in allowed_types:
+                logger.warning(
+                    f"Invalid file type: {file.content_type}. Allowed: {allowed_types}"
+                )
+                return JSONResponse(
+                    {
+                        "error": f"Invalid file type. Allowed types: {', '.join(allowed_types)}"
+                    },
+                    status_code=400,
+                )
+
+            # Generate unique filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_ext = file.filename.split(".")[-1] if "." in file.filename else "webm"
+            unique_filename = f"recording_{timestamp}_{str(uuid4())[:8]}.{file_ext}"
+            file_path = video_dir / unique_filename
+
+            # Read and save the video file
+            contents = await file.read()
+            file_size_mb = len(contents) / (1024 * 1024)
+
+            # Validate file size (max 100MB)
+            if file_size_mb > 100:
+                logger.warning(f"File too large: {file_size_mb:.2f}MB")
+                return JSONResponse(
+                    {"error": "File too large. Maximum size is 100MB."},
+                    status_code=413,
+                )
+
+            # Write file to disk
+            with open(file_path, "wb") as f:
+                f.write(contents)
+
+            logger.info(
+                f"✅ Video saved successfully: {file_path} (Size: {file_size_mb:.2f}MB)"
+            )
+
+            return JSONResponse(
+                {
+                    "status": "success",
+                    "message": "Video uploaded successfully",
+                    "filename": unique_filename,
+                    "path": str(file_path),
+                    "size_mb": round(file_size_mb, 2),
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Error saving video: {e}")
+            return JSONResponse(
+                {"error": f"Failed to save video: {str(e)}"}, status_code=500
+            )
 
     @router.post("/asr")
     async def transcribe_audio(file: UploadFile = File(...)):
