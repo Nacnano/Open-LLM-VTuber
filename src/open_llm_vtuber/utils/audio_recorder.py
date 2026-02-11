@@ -12,8 +12,8 @@ The recorder uses a hybrid wall-clock / cursor model for turn-based conversation
   timestamps are slightly off.
 """
 
-import os
 import asyncio
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -105,14 +105,18 @@ class AudioRecorder:
                 f"(duration: {duration:.2f}s, cursor now: {self._cursor:.2f}s)"
             )
 
-    async def add_tts_audio(self, audio_file_path: str) -> None:
+    async def add_tts_audio(
+        self, audio_file_path: str, backdate_seconds: float = 0.0
+    ) -> None:
         """Add TTS output audio to channel 2 (right).
 
-        The segment is placed at ``max(cursor, wall_clock_now)`` so that
+        The segment is placed at ``max(cursor, wall_clock_now - backdate)`` so that
         silence gaps are preserved but overlap is impossible.
 
         Args:
             audio_file_path: Path to the TTS audio file.
+            backdate_seconds: How many seconds to backdate the start of this
+                segment (useful to account for TTS generation time).
         """
         async with self._lock:
             try:
@@ -133,7 +137,8 @@ class AudioRecorder:
                     )
 
                 wall_now = self._relative_now()
-                timestamp = max(self._cursor, wall_now)
+                # Backdate the timestamp to account for TTS generation time
+                timestamp = max(self._cursor, wall_now - backdate_seconds)
                 duration = len(audio_data) / self.sample_rate
 
                 self._tts_audio_segments.append(
@@ -143,7 +148,8 @@ class AudioRecorder:
 
                 logger.debug(
                     f"📝 Added TTS audio from {audio_file_path} at {timestamp:.2f}s "
-                    f"(duration: {duration:.2f}s, cursor now: {self._cursor:.2f}s)"
+                    f"(duration: {duration:.2f}s, backdate: {backdate_seconds:.2f}s, "
+                    f"cursor now: {self._cursor:.2f}s)"
                 )
 
             except Exception as e:
@@ -300,6 +306,157 @@ class AudioRecorder:
 
             except Exception as e:
                 logger.error(f"❌ Error saving recording to {output_path}: {e}")
+                return False
+
+    async def save_recording_from_timestamp(
+        self,
+        output_path: str,
+        start_timestamp: float,
+        end_timestamp: float | None = None,
+    ) -> bool:
+        """Save a trimmed recording starting from a specific wall-clock timestamp.
+
+        This is useful when video recording starts after audio recording has begun.
+        The audio will be trimmed to align with the video start time and optionally
+        padded to match a specific duration.
+
+        Args:
+            output_path: Path where the WAV file will be saved.
+            start_timestamp: Unix timestamp (time.time()) when to start the recording.
+            end_timestamp: Optional Unix timestamp when to end the recording.
+                If provided, audio will be padded with silence to match this duration.
+
+        Returns:
+            True if save was successful, False otherwise.
+        """
+        async with self._lock:
+            try:
+                if self._start_time is None:
+                    logger.warning("⚠️ Recording hasn't started yet")
+                    return False
+
+                # If we have no audio but have an end_timestamp, we can still create
+                # a silent audio file to match the video duration
+                has_audio = bool(self._user_audio_segments) or bool(
+                    self._tts_audio_segments
+                )
+                if not has_audio and end_timestamp is None:
+                    logger.warning("⚠️ No audio data to save and no duration specified")
+                    return False
+
+                # Calculate the offset from audio recording start
+                trim_offset = max(0.0, start_timestamp - self._start_time)
+
+                logger.info(
+                    f"✂️ Trimming audio - audio_start: {self._start_time:.2f}, "
+                    f"video_start: {start_timestamp:.2f}, "
+                    f"video_end: {f'{end_timestamp:.2f}' if end_timestamp is not None else 'None'}, "
+                    f"trim_offset: {trim_offset:.2f}s"
+                )
+
+                logger.debug(
+                    f"📊 Before trimming - user segments: {len(self._user_audio_segments)}, "
+                    f"tts segments: {len(self._tts_audio_segments)}"
+                )
+                if self._user_audio_segments:
+                    for i, (ts, _) in enumerate(self._user_audio_segments[:3]):
+                        logger.debug(f"  User segment {i}: timestamp={ts:.2f}s")
+                if self._tts_audio_segments:
+                    for i, (ts, _) in enumerate(self._tts_audio_segments[:3]):
+                        logger.debug(f"  TTS segment {i}: timestamp={ts:.2f}s")
+
+                # Filter and adjust segments to start from trim_offset
+                def trim_segments(
+                    segments: list[tuple[float, np.ndarray]],
+                ) -> list[tuple[float, np.ndarray]]:
+                    trimmed = []
+                    for seg_start, audio_data in segments:
+                        seg_end = seg_start + len(audio_data) / self.sample_rate
+
+                        if seg_end <= trim_offset:
+                            # Segment ends before trim point → skip
+                            continue
+                        elif seg_start >= trim_offset:
+                            # Segment starts after trim point → shift timestamp
+                            trimmed.append((seg_start - trim_offset, audio_data))
+                        else:
+                            # Segment overlaps trim point → split and shift
+                            samples_to_skip = int(
+                                (trim_offset - seg_start) * self.sample_rate
+                            )
+                            trimmed_audio = audio_data[samples_to_skip:]
+                            trimmed.append((0.0, trimmed_audio))
+
+                    return trimmed
+
+                trimmed_user = trim_segments(self._user_audio_segments)
+                trimmed_tts = trim_segments(self._tts_audio_segments)
+
+                logger.debug(
+                    f"📊 After trimming - user segments: {len(trimmed_user)}, "
+                    f"tts segments: {len(trimmed_tts)}"
+                )
+                if trimmed_user:
+                    for i, (ts, audio) in enumerate(trimmed_user[:3]):
+                        duration = len(audio) / self.sample_rate
+                        logger.debug(
+                            f"  Trimmed user segment {i}: timestamp={ts:.2f}s, duration={duration:.2f}s"
+                        )
+                if trimmed_tts:
+                    for i, (ts, audio) in enumerate(trimmed_tts[:3]):
+                        duration = len(audio) / self.sample_rate
+                        logger.debug(
+                            f"  Trimmed TTS segment {i}: timestamp={ts:.2f}s, duration={duration:.2f}s"
+                        )
+
+                # Compute duration from audio segments
+                max_end = 0.0
+                for seg_start, audio in trimmed_user:
+                    max_end = max(max_end, seg_start + len(audio) / self.sample_rate)
+                for seg_start, audio in trimmed_tts:
+                    max_end = max(max_end, seg_start + len(audio) / self.sample_rate)
+
+                # If end_timestamp is provided, use it to determine the target duration
+                # This ensures silence periods are preserved even when user hasn't spoken
+                if end_timestamp is not None:
+                    target_duration = max(0.0, end_timestamp - start_timestamp)
+                    # Use the maximum of computed and target duration to preserve all audio
+                    total_duration = max(max_end, target_duration)
+                    logger.info(
+                        f"📏 Target duration from timestamps: {target_duration:.2f}s, "
+                        f"audio segments end at: {max_end:.2f}s, "
+                        f"using: {total_duration:.2f}s"
+                    )
+                else:
+                    total_duration = max_end
+                    if total_duration == 0.0:
+                        logger.warning(
+                            f"⚠️ No audio data after trimming at offset {trim_offset:.2f}s"
+                        )
+                        return False
+
+                # Build timelines with silence padding
+                user_channel = self._build_timeline(trimmed_user, total_duration)
+                tts_channel = self._build_timeline(trimmed_tts, total_duration)
+
+                stereo_audio = np.stack([user_channel, tts_channel], axis=1)
+
+                output_dir = Path(output_path).parent
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                sf.write(output_path, stereo_audio, self.sample_rate, subtype="PCM_16")
+
+                logger.info(
+                    f"💾 Trimmed recording saved to {output_path} "
+                    f"(duration: {total_duration:.2f}s, offset: {trim_offset:.2f}s, "
+                    f"user segments: {len(trimmed_user)}, "
+                    f"tts segments: {len(trimmed_tts)})"
+                )
+
+                return True
+
+            except Exception as e:
+                logger.error(f"❌ Error saving trimmed recording to {output_path}: {e}")
                 return False
 
     async def clear(self) -> None:

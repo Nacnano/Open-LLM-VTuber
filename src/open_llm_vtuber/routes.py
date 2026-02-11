@@ -1,17 +1,18 @@
-import os
 import json
-from uuid import uuid4
-import numpy as np
+import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, WebSocket, UploadFile, File, Response, Request
-from starlette.responses import JSONResponse
-import subprocess
-from starlette.websockets import WebSocketDisconnect
+from uuid import uuid4
+
+import numpy as np
+from fastapi import APIRouter, File, Form, Request, Response, UploadFile, WebSocket
 from loguru import logger
-from .service_context import ServiceContext
-from .websocket_handler import WebSocketHandler
+from starlette.responses import JSONResponse
+from starlette.websockets import WebSocketDisconnect
+
 from .proxy_handler import ProxyHandler
+from .websocket_handler import WebSocketHandler
 
 
 def get_duration(file_path: str) -> float | None:
@@ -166,22 +167,35 @@ def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
         )
 
     @router.post("/upload-video")
-    async def upload_video(request: Request, file: UploadFile = File(...)):
+    async def upload_video(
+        request: Request,
+        file: UploadFile = File(...),
+        start_timestamp: str | None = Form(None),
+        end_timestamp: str | None = Form(None),
+    ):
         """
         Endpoint for uploading recorded video from webcam.
-        
+
         This endpoint:
         1. Saves the uploaded video (webm)
         2. Identifies the session via IP and stops/saves the audio recording
         3. Merges the video and audio into a final mp4
-        
+
         Args:
             file: The video file uploaded from the client.
+            start_timestamp: Unix timestamp (seconds) when video recording started.
+            end_timestamp: Unix timestamp (seconds) when video recording ended.
 
         Returns:
             JSONResponse: Success message with saved file path or error message.
         """
-        logger.info(f"📹 Received video file for upload: {file.filename}")
+        video_start_time = float(start_timestamp) if start_timestamp else None
+        video_end_time = float(end_timestamp) if end_timestamp else None
+        logger.info(
+            f"📹 Received video file for upload: {file.filename}, "
+            f"start_timestamp: {video_start_time}, "
+            f"end_timestamp: {video_end_time}"
+        )
 
         try:
             # Create recorded_videos directory if it doesn't exist
@@ -227,94 +241,145 @@ def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
             logger.info(
                 f"✅ Video saved successfully: {video_path} (Size: {file_size_mb:.2f}MB)"
             )
-            
+
             # --- Audio Merging Logic ---
             client_ip = request.client.host
             logger.info(f"🔍 Looking for session with IP: {client_ip}")
-            
+
             # Try to find matching context
             context = ws_handler.get_context_by_ip(client_ip)
             output_filename = video_filename
             output_path = str(video_path)
-            
-            if context and context.audio_recorder and context.audio_recorder.has_audio():
-                logger.info("🎙️ Found active session with audio. Stopping and saving audio...")
-                
-                # Generate audio filename using the same ID/Timestamp if possible or new one
-                # We'll rely on the recorder's generator but try to match the dir
-                from .utils.audio_recorder import AudioRecorder
-                
-                # Use the same IDs if possible, or just generate new one
-                conf_uid = context.character_config.conf_uid if context.character_config else "unknown"
-                history_uid = context.history_uid
-                
-                audio_filename = f"audio_{timestamp}_{unique_id}.wav"
-                audio_path = video_dir / audio_filename
-                
-                # Save audio
-                await context.audio_recorder.save_recording(str(audio_path))
-                await context.audio_recorder.clear()
-                
-                # Get durations to calculate sync offset
-                video_duration = get_duration(str(video_path))
-                audio_duration = get_duration(str(audio_path))
-                
-                offset = 0.0
-                if video_duration is not None and audio_duration is not None:
-                    # If audio is longer than video, we assume the extra length is at the beginning
-                    # (since audio starts at meeting start, video starts at camera open)
-                    offset = max(0.0, audio_duration - video_duration)
-                    logger.info(f"⏱️ durations - Video: {video_duration:.2f}s, Audio: {audio_duration:.2f}s. Sync offset: {offset:.2f}s")
 
-                # Merge Video and Audio using ffmpeg
-                # Output file
-                merged_filename = f"recording_{timestamp}_{unique_id}.mp4"
-                merged_path = video_dir / merged_filename
-                
-                logger.info(f"🔄 Merging video and audio to {merged_path}...")
-                
-                try:
-                    # ffmpeg command:
-                    # ffmpeg -i video.webm -ss offset -i audio.wav -c:v libx264 ...
-                    # -ss before -i applies to the input file that follows it
-                    
-                    command = [
-                        "ffmpeg",
-                        "-y", # Overwrite output
-                        "-i", str(video_path),
-                        "-ss", str(offset), # Seek audio input to sync
-                        "-i", str(audio_path),
-                        "-c:v", "libx264", # Encode video to H.264 for MP4 compatibility
-                        "-preset", "fast",
-                        "-crf", "22",
-                        "-c:a", "aac",     # Encode audio to AAC
-                        "-b:a", "192k",
-                        "-shortest",       # Finish when shortest input ends
-                        str(merged_path)
-                    ]
-                    
-                    # Run ffmpeg
-                    process = subprocess.run(
-                        command, 
-                        check=True, 
-                        stdout=subprocess.PIPE, 
-                        stderr=subprocess.PIPE,
-                        text=True
+            # Try to save and merge audio if we have a context and timestamps
+            # Even if has_audio() returns False, we can create a silent audio file
+            # if we have video timestamps
+            if context and context.audio_recorder:
+                has_audio = context.audio_recorder.has_audio()
+                has_timestamps = (
+                    video_start_time is not None and video_end_time is not None
+                )
+
+                if has_audio or has_timestamps:
+                    logger.info(
+                        f"🎙️ Found active session. "
+                        f"Has audio segments: {has_audio}, Has timestamps: {has_timestamps}"
                     )
-                    
-                    logger.info(f"✅ Merge successful: {merged_path}")
-                    output_filename = merged_filename
-                    output_path = str(merged_path)
-                    
-                    # Optional: Delete intermediates? 
-                    # Keeping them might be safer for now, or we can delete.
-                    # Let's keep them as backups for now.
-                    
-                except subprocess.CalledProcessError as e:
-                    logger.error(f"❌ ffmpeg merge failed: {e.stderr}")
-                    # Fallback to returning just the video (already saved)
+
+                    audio_filename = f"audio_{timestamp}_{unique_id}.wav"
+                    audio_path = video_dir / audio_filename
+
+                    # Save audio - use trimmed version if we have a start timestamp
+                    audio_saved = False
+                    if video_start_time is not None:
+                        logger.info(
+                            f"✂️ Using video timestamps to trim audio: "
+                            f"start={video_start_time}, end={video_end_time}"
+                        )
+                        audio_saved = (
+                            await context.audio_recorder.save_recording_from_timestamp(
+                                str(audio_path), video_start_time, video_end_time
+                            )
+                        )
+                    else:
+                        logger.warning(
+                            "⚠️ No video start timestamp provided. "
+                            "Audio/video sync may be inaccurate!"
+                        )
+                        if has_audio:
+                            audio_saved = await context.audio_recorder.save_recording(
+                                str(audio_path)
+                            )
+
+                    await context.audio_recorder.clear()
+
+                    # Only proceed with merge if audio was actually saved
+                    if audio_saved and audio_path.exists():
+                        # Get durations for logging
+                        video_duration = get_duration(str(video_path))
+                        audio_duration = get_duration(str(audio_path))
+
+                        if video_duration is not None and audio_duration is not None:
+                            logger.info(
+                                f"⏱️ Durations - Video: {video_duration:.2f}s, "
+                                f"Audio: {audio_duration:.2f}s"
+                            )
+
+                        # Merge Video and Audio using ffmpeg
+                        # Output file
+                        merged_filename = f"recording_{timestamp}_{unique_id}.mp4"
+                        merged_path = video_dir / merged_filename
+
+                        logger.info(f"🔄 Merging video and audio to {merged_path}...")
+
+                        try:
+                            # Camera/video recording typically has ~200-500ms delay from
+                            # when timestamp is captured to when first frame appears.
+                            # Add audio delay to compensate for this video capture lag.
+                            audio_delay_ms = 0  # milliseconds - adjust if needed
+
+                            logger.info(
+                                f"⏱️  Adding {audio_delay_ms}ms audio delay to sync with video"
+                            )
+
+                            # ffmpeg command to merge video and audio
+                            # Use adelay filter to shift audio forward in time
+                            command = [
+                                "ffmpeg",
+                                "-y",  # Overwrite output
+                                "-i",
+                                str(video_path),
+                                "-i",
+                                str(audio_path),
+                                "-c:v",
+                                "libx264",  # Encode video to H.264 for MP4 compatibility
+                                "-preset",
+                                "fast",
+                                "-crf",
+                                "22",
+                                "-af",
+                                f"adelay=delays={audio_delay_ms}:all=1",  # Delay audio to sync with video
+                                "-c:a",
+                                "aac",  # Encode audio to AAC
+                                "-b:a",
+                                "192k",
+                                "-shortest",  # Finish when shortest input ends
+                                str(merged_path),
+                            ]
+
+                            # Run ffmpeg
+                            subprocess.run(
+                                command,
+                                check=True,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                            )
+
+                            logger.info(f"✅ Merge successful: {merged_path}")
+                            output_filename = merged_filename
+                            output_path = str(merged_path)
+
+                            # Optional: Delete intermediates?
+                            # Keeping them might be safer for now, or we can delete.
+                            # Let's keep them as backups for now.
+
+                        except subprocess.CalledProcessError as e:
+                            logger.error(f"❌ ffmpeg merge failed: {e.stderr}")
+                            # Fallback to returning just the video (already saved)
+                    else:
+                        if audio_saved:
+                            logger.warning("⚠️ Audio was saved but file doesn't exist")
+                        else:
+                            logger.warning("⚠️ Audio recording save failed")
+                else:
+                    logger.warning(
+                        "⚠️ No audio segments and no timestamps. Skipping audio merge."
+                    )
             else:
-                logger.warning("⚠️ No matching session/audio found for this IP. Returning video only.")
+                logger.warning(
+                    "⚠️ No matching session/audio found for this IP. Returning video only."
+                )
 
             return JSONResponse(
                 {

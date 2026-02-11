@@ -3,10 +3,11 @@ import json
 import re
 import uuid
 from datetime import datetime
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
+
 from loguru import logger
 
-from ..agent.output_types import DisplayText, Actions
+from ..agent.output_types import Actions, DisplayText
 from ..live2d_model import Live2dModel
 from ..tts.tts_interface import TTSInterface
 from ..utils.stream_audio import prepare_audio_payload
@@ -143,11 +144,20 @@ class TTSTaskManager:
         """Process TTS generation and queue the result for ordered delivery"""
         audio_file_path = None
         try:
+            # Capture start time before TTS generation
+            import time
+
+            tts_start_time = time.time()
+
             audio_file_path = await self._generate_audio(tts_engine, tts_text)
 
             # Record TTS audio if recording is enabled
             if audio_recorder and audio_file_path:
-                await audio_recorder.add_tts_audio(audio_file_path)
+                # Calculate how long TTS generation took
+                tts_generation_time = time.time() - tts_start_time
+                # Backdate by the generation time so TTS appears at response start
+                # rather than when the file was ready
+                await audio_recorder.add_tts_audio(audio_file_path, tts_generation_time)
 
             payload = prepare_audio_payload(
                 audio_path=audio_file_path,
