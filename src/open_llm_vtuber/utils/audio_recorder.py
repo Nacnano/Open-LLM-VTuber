@@ -48,6 +48,18 @@ class AudioRecorder:
         self._lock = asyncio.Lock()
 
         logger.debug(f"🎙️ AudioRecorder initialized with sample rate: {sample_rate} Hz")
+        
+    async def start(self) -> None:
+        """
+        Start the recording timer explicitly.
+        
+        This sets the reference start time for the recording. Any audio added later
+        will be timestamped relative to this start time.
+        """
+        async with self._lock:
+            if self._start_time is None:
+                self._start_time = time.time()
+                logger.info(f"🎙️ AudioRecorder started at {self._start_time}")
 
     async def add_user_audio(
         self, audio_data: np.ndarray, backdate_seconds: float = 0.0
@@ -62,15 +74,25 @@ class AudioRecorder:
         """
         async with self._lock:
             if len(audio_data) > 0:
+                current_time = 0.0
+                
                 # Initialize start time on first audio
                 if self._start_time is None:
-                    self._start_time = time.time() - backdate_seconds
-
-                # Calculate timestamp, backdating if requested
-                # This ensures audio captured earlier is placed at correct timeline position
-                current_time = time.time() - self._start_time - backdate_seconds
-                # Ensure timestamp is never negative
-                current_time = max(0.0, current_time)
+                    # If we receive a chunk, it represents audio that JUST finished.
+                    # So the "start" of the conversation was `Now - Duration`.
+                    duration = len(audio_data) / self.sample_rate
+                    self._start_time = time.time() - duration - backdate_seconds
+                    # First chunk always starts at 0.0 relative to this calculated start time
+                    current_time = 0.0
+                else:
+                    # Subsequent chunks:
+                    # We want to place them at (Now - Duration - Start_Time).
+                    # This aligns the "Start" of this chunk with the timeline.
+                    duration = len(audio_data) / self.sample_rate
+                    # Timestamp should represent the START of this audio segment
+                    current_time = time.time() - duration - self._start_time - backdate_seconds
+                    # Ensure timestamp is never negative
+                    current_time = max(0.0, current_time)
 
                 self._user_audio_segments.append(
                     (current_time, audio_data.astype(np.float32))

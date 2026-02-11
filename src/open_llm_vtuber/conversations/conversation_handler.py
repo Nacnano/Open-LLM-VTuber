@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from typing import Dict, Optional, Callable
 
 import numpy as np
@@ -68,13 +69,15 @@ async def handle_conversation_trigger(
         user_input = received_data_buffers[client_uid]
 
         # Record user audio if recording is enabled
-        # Backdate the timestamp based on audio duration so it's placed correctly in timeline
+        # Backdate the timestamp based on audio duration so it's placed correctly
+        # in the timeline. This is the ONLY place user audio should be recorded —
+        # chunk-by-chunk recording in websocket_handler is intentionally skipped
+        # to avoid double-recording on the left channel.
         if context.audio_recorder and len(user_input) > 0:
             # Calculate audio duration in seconds
             audio_duration = len(user_input) / 16000.0  # Assuming 16kHz sample rate
 
             # Backdate timestamp so audio starts at (current_time - duration)
-            # This ensures user audio doesn't overlap with TTS that comes after
             await context.audio_recorder.add_user_audio(
                 user_input, backdate_seconds=audio_duration
             )

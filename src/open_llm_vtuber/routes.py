@@ -4,8 +4,9 @@ from uuid import uuid4
 import numpy as np
 from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, WebSocket, UploadFile, File, Response
+from fastapi import APIRouter, WebSocket, UploadFile, File, Response, Request
 from starlette.responses import JSONResponse
+import subprocess
 from starlette.websockets import WebSocketDisconnect
 from loguru import logger
 from .service_context import ServiceContext
@@ -13,19 +14,43 @@ from .websocket_handler import WebSocketHandler
 from .proxy_handler import ProxyHandler
 
 
-def init_client_ws_route(default_context_cache: ServiceContext) -> APIRouter:
+def get_duration(file_path: str) -> float | None:
+    """Get the duration of a media file using ffprobe."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return float(result.stdout.strip())
+    except Exception as e:
+        logger.error(f"Error getting duration for {file_path}: {e}")
+        return None
+
+
+def init_client_ws_route(ws_handler: WebSocketHandler) -> APIRouter:
     """
     Create and return API routes for handling the `/client-ws` WebSocket connections.
 
     Args:
-        default_context_cache: Default service context cache for new sessions.
+        ws_handler: WebSocket handler instance.
 
     Returns:
         APIRouter: Configured router with WebSocket endpoint.
     """
 
     router = APIRouter()
-    ws_handler = WebSocketHandler(default_context_cache)
+    # ws_handler is now passed in
 
     @router.websocket("/client-ws")
     async def websocket_endpoint(websocket: WebSocket):
@@ -71,16 +96,17 @@ def init_proxy_route(server_url: str) -> APIRouter:
     return router
 
 
-def init_webtool_routes(default_context_cache: ServiceContext) -> APIRouter:
+def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
     """
     Create and return API routes for handling web tool interactions.
 
     Args:
-        default_context_cache: Default service context cache for new sessions.
+        ws_handler: WebSocket handler instance.
 
     Returns:
         APIRouter: Configured router with WebSocket endpoint.
     """
+    default_context_cache = ws_handler.default_context_cache
 
     router = APIRouter()
 
@@ -140,10 +166,15 @@ def init_webtool_routes(default_context_cache: ServiceContext) -> APIRouter:
         )
 
     @router.post("/upload-video")
-    async def upload_video(file: UploadFile = File(...)):
+    async def upload_video(request: Request, file: UploadFile = File(...)):
         """
         Endpoint for uploading recorded video from webcam.
-
+        
+        This endpoint:
+        1. Saves the uploaded video (webm)
+        2. Identifies the session via IP and stops/saves the audio recording
+        3. Merges the video and audio into a final mp4
+        
         Args:
             file: The video file uploaded from the client.
 
@@ -173,8 +204,9 @@ def init_webtool_routes(default_context_cache: ServiceContext) -> APIRouter:
             # Generate unique filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             file_ext = file.filename.split(".")[-1] if "." in file.filename else "webm"
-            unique_filename = f"recording_{timestamp}_{str(uuid4())[:8]}.{file_ext}"
-            file_path = video_dir / unique_filename
+            unique_id = str(uuid4())[:8]
+            video_filename = f"video_{timestamp}_{unique_id}.{file_ext}"
+            video_path = video_dir / video_filename
 
             # Read and save the video file
             contents = await file.read()
@@ -188,26 +220,114 @@ def init_webtool_routes(default_context_cache: ServiceContext) -> APIRouter:
                     status_code=413,
                 )
 
-            # Write file to disk
-            with open(file_path, "wb") as f:
+            # Write video file to disk
+            with open(video_path, "wb") as f:
                 f.write(contents)
 
             logger.info(
-                f"✅ Video saved successfully: {file_path} (Size: {file_size_mb:.2f}MB)"
+                f"✅ Video saved successfully: {video_path} (Size: {file_size_mb:.2f}MB)"
             )
+            
+            # --- Audio Merging Logic ---
+            client_ip = request.client.host
+            logger.info(f"🔍 Looking for session with IP: {client_ip}")
+            
+            # Try to find matching context
+            context = ws_handler.get_context_by_ip(client_ip)
+            output_filename = video_filename
+            output_path = str(video_path)
+            
+            if context and context.audio_recorder and context.audio_recorder.has_audio():
+                logger.info("🎙️ Found active session with audio. Stopping and saving audio...")
+                
+                # Generate audio filename using the same ID/Timestamp if possible or new one
+                # We'll rely on the recorder's generator but try to match the dir
+                from .utils.audio_recorder import AudioRecorder
+                
+                # Use the same IDs if possible, or just generate new one
+                conf_uid = context.character_config.conf_uid if context.character_config else "unknown"
+                history_uid = context.history_uid
+                
+                audio_filename = f"audio_{timestamp}_{unique_id}.wav"
+                audio_path = video_dir / audio_filename
+                
+                # Save audio
+                await context.audio_recorder.save_recording(str(audio_path))
+                await context.audio_recorder.clear()
+                
+                # Get durations to calculate sync offset
+                video_duration = get_duration(str(video_path))
+                audio_duration = get_duration(str(audio_path))
+                
+                offset = 0.0
+                if video_duration is not None and audio_duration is not None:
+                    # If audio is longer than video, we assume the extra length is at the beginning
+                    # (since audio starts at meeting start, video starts at camera open)
+                    offset = max(0.0, audio_duration - video_duration)
+                    logger.info(f"⏱️ durations - Video: {video_duration:.2f}s, Audio: {audio_duration:.2f}s. Sync offset: {offset:.2f}s")
+
+                # Merge Video and Audio using ffmpeg
+                # Output file
+                merged_filename = f"recording_{timestamp}_{unique_id}.mp4"
+                merged_path = video_dir / merged_filename
+                
+                logger.info(f"🔄 Merging video and audio to {merged_path}...")
+                
+                try:
+                    # ffmpeg command:
+                    # ffmpeg -i video.webm -ss offset -i audio.wav -c:v libx264 ...
+                    # -ss before -i applies to the input file that follows it
+                    
+                    command = [
+                        "ffmpeg",
+                        "-y", # Overwrite output
+                        "-i", str(video_path),
+                        "-ss", str(offset), # Seek audio input to sync
+                        "-i", str(audio_path),
+                        "-c:v", "libx264", # Encode video to H.264 for MP4 compatibility
+                        "-preset", "fast",
+                        "-crf", "22",
+                        "-c:a", "aac",     # Encode audio to AAC
+                        "-b:a", "192k",
+                        "-shortest",       # Finish when shortest input ends
+                        str(merged_path)
+                    ]
+                    
+                    # Run ffmpeg
+                    process = subprocess.run(
+                        command, 
+                        check=True, 
+                        stdout=subprocess.PIPE, 
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    
+                    logger.info(f"✅ Merge successful: {merged_path}")
+                    output_filename = merged_filename
+                    output_path = str(merged_path)
+                    
+                    # Optional: Delete intermediates? 
+                    # Keeping them might be safer for now, or we can delete.
+                    # Let's keep them as backups for now.
+                    
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"❌ ffmpeg merge failed: {e.stderr}")
+                    # Fallback to returning just the video (already saved)
+            else:
+                logger.warning("⚠️ No matching session/audio found for this IP. Returning video only.")
 
             return JSONResponse(
                 {
                     "status": "success",
-                    "message": "Video uploaded successfully",
-                    "filename": unique_filename,
-                    "path": str(file_path),
-                    "size_mb": round(file_size_mb, 2),
+                    "message": "Video uploaded and processed successfully",
+                    "filename": output_filename,
+                    "path": output_path,
+                    "size_mb": round(os.path.getsize(output_path) / (1024 * 1024), 2),
                 }
             )
 
         except Exception as e:
-            logger.error(f"❌ Error saving video: {e}")
+            logger.error(f"❌ Error saving/processing video: {e}")
             return JSONResponse(
                 {"error": f"Failed to save video: {str(e)}"}, status_code=500
             )

@@ -73,6 +73,21 @@ class WebSocketHandler:
         # Message handlers mapping
         self._message_handlers = self._init_message_handlers()
 
+    def get_context_by_ip(self, ip_address: str) -> Optional[ServiceContext]:
+        """
+        Find the service context for a client with the given IP address.
+        
+        Args:
+            ip_address: The IP address to look up
+            
+        Returns:
+            The ServiceContext for the matching client, or None if not found
+        """
+        for client_uid, websocket in self.client_connections.items():
+            if websocket.client and websocket.client.host == ip_address:
+                return self.client_contexts.get(client_uid)
+        return None
+
     def _init_message_handlers(self) -> Dict[str, Callable]:
         """Initialize message type to handler mapping"""
         return {
@@ -95,6 +110,7 @@ class WebSocketHandler:
             "audio-play-start": self._handle_audio_play_start,
             "request-init-config": self._handle_init_config_request,
             "heartbeat": self._handle_heartbeat,
+            "control": self._handle_control_message,
         }
 
     async def handle_new_connection(
@@ -511,11 +527,9 @@ class WebSocketHandler:
                 audio_array,
             )
 
-            # Record user audio if recording is enabled
-            context = self.client_contexts.get(client_uid)
-            if context and context.audio_recorder:
-                await context.audio_recorder.add_user_audio(audio_array)
-                logger.debug(f"📼 Added {len(audio_array)} samples to recorder")
+            # NOTE: User audio recording is handled in conversation_handler.py
+            # (on mic-audio-end) using the full accumulated buffer, NOT here
+            # chunk-by-chunk, to avoid double-recording on the left channel.
 
     async def _handle_raw_audio_data(
         self, websocket: WebSocket, client_uid: str, data: WSMessage
@@ -543,9 +557,9 @@ class WebSocketHandler:
                         audio_array,
                     )
 
-                    # Record user audio if recording is enabled
-                    if context.audio_recorder:
-                        await context.audio_recorder.add_user_audio(audio_array)
+                    # NOTE: User audio recording is handled in
+                    # conversation_handler.py (on mic-audio-end) using the
+                    # full accumulated buffer, NOT here chunk-by-chunk.
 
                     await websocket.send_text(
                         json.dumps({"type": "control", "text": "mic-audio-end"})
@@ -651,3 +665,26 @@ class WebSocketHandler:
             await websocket.send_json({"type": "heartbeat-ack"})
         except Exception as e:
             logger.error(f"Error sending heartbeat acknowledgment: {e}")
+
+    async def _handle_control_message(
+        self, websocket: WebSocket, client_uid: str, data: WSMessage
+    ) -> None:
+        """Handle control messages"""
+        command = data.get("text")
+        context = self.client_contexts.get(client_uid)
+        
+        if command == "start-recording":
+            if context and context.audio_recorder:
+                logger.info(f"🔴 Starting recording for client {client_uid}")
+                await context.audio_recorder.clear()
+                await context.audio_recorder.start()
+        elif command == "stop-recording":
+             # We can optionally handle explicit stop here, though upload_video handles the saving
+             logger.info(f"⏹️ Stop recording signal received for client {client_uid}")
+             pass
+        elif command == "interrupt":
+             # Re-route interrupt to existing handler if needed, or keeping existing interrupt-signal logic
+             pass
+        elif command == "mic-audio-end":
+             # Re-route to conversation trigger
+             await self._handle_conversation_trigger(websocket, client_uid, data)
