@@ -76,10 +76,10 @@ class WebSocketHandler:
     def get_context_by_ip(self, ip_address: str) -> Optional[ServiceContext]:
         """
         Find the service context for a client with the given IP address.
-        
+
         Args:
             ip_address: The IP address to look up
-            
+
         Returns:
             The ServiceContext for the matching client, or None if not found
         """
@@ -672,19 +672,19 @@ class WebSocketHandler:
         """Handle control messages"""
         command = data.get("text")
         context = self.client_contexts.get(client_uid)
-        
+
         if command == "start-recording":
             if context and context.audio_recorder:
                 logger.info(f"🔴 Starting recording for client {client_uid}")
                 await context.audio_recorder.clear()
                 await context.audio_recorder.start()
         elif command == "stop-recording":
-             # We can optionally handle explicit stop here, though upload_video handles the saving
-             logger.info(f"⏹️ Stop recording signal received for client {client_uid}")
-             pass
+            # We can optionally handle explicit stop here, though upload_video handles the saving
+            logger.info(f"⏹️ Stop recording signal received for client {client_uid}")
+            pass
         elif command == "interrupt":
-             # Re-route interrupt to existing handler if needed, or keeping existing interrupt-signal logic
-             pass
+            # Re-route interrupt to existing handler if needed, or keeping existing interrupt-signal logic
+            pass
         elif command == "mic-audio-end":
-             # Re-route to conversation trigger
-             await self._handle_conversation_trigger(websocket, client_uid, data)
+            # Re-route to conversation trigger
+            await self._handle_conversation_trigger(websocket, client_uid, data)
