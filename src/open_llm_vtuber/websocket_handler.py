@@ -1,32 +1,33 @@
-from typing import Dict, List, Optional, Callable, TypedDict
-from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 import json
 from enum import Enum
+from typing import Callable, Dict, List, Optional, TypedDict
+
 import numpy as np
+from fastapi import WebSocket, WebSocketDisconnect
 from loguru import logger
 
-from .service_context import ServiceContext
 from .chat_group import (
     ChatGroupManager,
-    handle_group_operation,
-    handle_client_disconnect,
     broadcast_to_group,
+    handle_client_disconnect,
+    handle_group_operation,
 )
-from .message_handler import message_handler
-from .utils.stream_audio import prepare_audio_payload
 from .chat_history_manager import (
     create_new_history,
-    get_history,
     delete_history,
+    get_history,
     get_history_list,
 )
-from .config_manager.utils import scan_config_alts_directory, scan_bg_directory
+from .config_manager.utils import scan_bg_directory, scan_config_alts_directory
 from .conversations.conversation_handler import (
     handle_conversation_trigger,
     handle_group_interrupt,
     handle_individual_interrupt,
 )
+from .message_handler import message_handler
+from .service_context import ServiceContext
+from .utils.stream_audio import prepare_audio_payload
 
 
 class MessageType(Enum):
@@ -569,9 +570,14 @@ class WebSocketHandler:
         self, websocket: WebSocket, client_uid: str, data: WSMessage
     ) -> None:
         """Handle triggers that start a conversation"""
+        # Suppress camera input to LLM (camera is only for recording purposes)
+        # Create a copy of data without images to prevent LLM from seeing camera input
+        data_without_images = data.copy()
+        data_without_images.pop("images", None)
+        
         await handle_conversation_trigger(
             msg_type=data.get("type", ""),
-            data=data,
+            data=data_without_images,
             client_uid=client_uid,
             context=self.client_contexts[client_uid],
             websocket=websocket,
