@@ -30,6 +30,19 @@ system_config:
   # 录音配置
   enable_recording: false # 启用对话录音功能
   recording_output_dir: 'recordings' # 录音文件保存目录
+
+  # 会议后视频分析配置
+  # 使用视觉 LLM 分析录制的视频和对话记录，为用户的对话表现提供反馈
+  video_analysis:
+    enabled: false # 设置为 true 以启用会议后视频分析
+    # 支持视觉的 LLM API 端点（OpenAI 兼容）
+    base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/'
+    api_key: '' # 视觉 LLM 的 API 密钥
+    model: 'gemini-2.0-flash' # 必须支持视觉/图像输入（例如 gpt-4o, gemini-2.0-flash）
+    max_frames: 8 # 从视频中提取用于分析的帧数
+    temperature: 0.7
+    # 自定义分析提示词。留空使用默认的雅思风格评估提示词。
+    analysis_prompt: ''
  
 
 # 默认角色的配置

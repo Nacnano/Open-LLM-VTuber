@@ -28,6 +28,20 @@ system_config:
   # Recording configuration
   enable_recording: false # Enable audio recording of conversations
   recording_output_dir: 'recordings' # Directory for saving audio recordings
+
+  # Post-meeting video analysis configuration
+  # Uses a Visual LLM to analyze the recorded video and conversation transcript
+  # to provide feedback on the user's conversational performance
+  video_analysis:
+    enabled: false # Set to true to enable post-meeting video analysis
+    # API endpoint for a vision-capable LLM (OpenAI-compatible)
+    base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/'
+    api_key: '' # Your API key for the Visual LLM
+    model: 'gemini-2.0-flash' # Must support vision/image input (e.g. gpt-4o, gemini-2.0-flash)
+    max_frames: 8 # Number of frames to extract from the video for analysis
+    temperature: 0.7
+    # Custom analysis prompt. Leave empty to use the default IELTS-style evaluation prompt.
+    analysis_prompt: ''
  
 
 # configuration for the default character

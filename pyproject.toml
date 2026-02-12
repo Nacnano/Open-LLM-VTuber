@@ -41,6 +41,7 @@ dependencies = [
     "letta-client>=0.1.100",
     "duckduckgo-mcp-server>=0.1.1",
     "piper-tts>=1.3.0",
+    "google-genai>=1.63.0",
 ]
 
 [project.optional-dependencies]

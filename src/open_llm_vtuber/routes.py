@@ -11,7 +11,9 @@ from loguru import logger
 from starlette.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
 
+from .chat_history_manager import get_history
 from .proxy_handler import ProxyHandler
+from .video_analyzer import analyze_video
 from .websocket_handler import WebSocketHandler
 
 
@@ -509,5 +511,119 @@ def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
         except Exception as e:
             logger.error(f"Error in TTS WebSocket connection: {e}")
             await websocket.close()
+
+    @router.post("/analyze-video")
+    async def analyze_video_endpoint(
+        request: Request,
+        video_path: str = Form(...),
+    ):
+        """Analyze a recorded meeting video using a Visual LLM.
+
+        Takes the path to a recorded video file, retrieves the conversation
+        transcript from the current session's chat history, and sends both
+        to a Visual LLM for feedback on the user's conversational performance.
+
+        Args:
+            request: The HTTP request object.
+            video_path: Path to the recorded video file.
+
+        Returns:
+            JSONResponse: Analysis feedback or error message.
+        """
+        logger.info(f"📊 Video analysis requested for: {video_path}")
+
+        # Validate video file exists
+        if not Path(video_path).exists():
+            logger.warning(f"Video file not found: {video_path}")
+            return JSONResponse(
+                {"error": f"Video file not found: {video_path}"},
+                status_code=404,
+            )
+
+        # Get video analysis config
+        system_config = default_context_cache.system_config
+        analysis_config = system_config.video_analysis
+
+        if not analysis_config.enabled:
+            logger.warning("Video analysis is not enabled in configuration")
+            return JSONResponse(
+                {
+                    "error": "Video analysis is not enabled. "
+                    "Set video_analysis.enabled to true in conf.yaml"
+                },
+                status_code=400,
+            )
+
+        if not analysis_config.api_key:
+            logger.warning("Video analysis API key is not configured")
+            return JSONResponse(
+                {
+                    "error": "Video analysis API key is not configured. "
+                    "Set video_analysis.api_key in conf.yaml"
+                },
+                status_code=400,
+            )
+
+        # Build transcript from chat history
+        transcript = ""
+        client_ip = request.client.host
+        context = ws_handler.get_context_by_ip(client_ip)
+
+        if context and context.character_config:
+            conf_uid = context.character_config.conf_uid
+            history_uid = context.history_uid
+
+            if conf_uid and history_uid:
+                messages = get_history(conf_uid, history_uid)
+                if messages:
+                    transcript_lines = []
+                    for msg in messages:
+                        role_label = "Student" if msg["role"] == "human" else "Examiner"
+                        transcript_lines.append(f"{role_label}: {msg['content']}")
+                    transcript = "\n\n".join(transcript_lines)
+                    logger.info(f"📝 Built transcript with {len(messages)} messages")
+
+        if not transcript:
+            logger.warning("No transcript found, analyzing video frames only")
+            transcript = "(No transcript available)"
+
+        # Run video analysis
+        try:
+            feedback = await analyze_video(
+                video_path=video_path,
+                transcript=transcript,
+                base_url=analysis_config.base_url,
+                api_key=analysis_config.api_key,
+                model=analysis_config.model,
+                analysis_prompt=(
+                    analysis_config.analysis_prompt
+                    if analysis_config.analysis_prompt
+                    else None
+                ),
+                max_frames=analysis_config.max_frames,
+                temperature=analysis_config.temperature,
+            )
+
+            return JSONResponse(
+                {
+                    "status": "success",
+                    "feedback": feedback,
+                    "video_path": video_path,
+                    "transcript_length": len(transcript),
+                }
+            )
+
+        except FileNotFoundError as e:
+            logger.error(f"Video file not found: {e}")
+            return JSONResponse({"error": str(e)}, status_code=404)
+        except RuntimeError as e:
+            logger.error(f"Video analysis failed: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+        except Exception as e:
+            logger.error(f"❌ Unexpected error during video analysis: {e}")
+            return JSONResponse(
+                {"error": f"Video analysis failed: {str(e)}"},
+                status_code=500,
+            )
 
     return router
