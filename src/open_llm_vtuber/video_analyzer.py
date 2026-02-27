@@ -42,9 +42,16 @@ Please provide detailed feedback on the student's conversational performance, in
 - Common grammatical errors noticed
 
 ## Pronunciation & Delivery (based on video frames)
-- Body language and facial expressions
-- Eye contact and engagement
 - Overall confidence and composure
+- Vocal fillers or unnatural pauses observed
+
+## Body Language Analysis (based on video frames)
+- **Posture:** Is the student sitting/standing upright and engaged, or slouching/rigid?
+- **Facial Expressions:** Are expressions natural and congruent with the content being discussed?
+- **Eye Contact:** Does the student maintain appropriate eye contact or frequently look away?
+- **Gestures:** Does the student use hand gestures effectively to support their points?
+- **Nervous Habits:** Any visible signs of anxiety (fidgeting, touching face, shifting, etc.)?
+- **Overall Presence:** Rate the student's non-verbal communication on a scale of 1-9
 
 ## Key Strengths
 - List 2-3 specific things the student did well
@@ -189,29 +196,25 @@ async def analyze_video(
     if not Path(video_path).exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
-    # Extract frames
+    # Read video file as bytes
+    video_bytes = await asyncio.to_thread(Path(video_path).read_bytes)
+    logger.info(f"📹 Read video file: {len(video_bytes)} bytes")
 
     # Build the prompt
     system_prompt = analysis_prompt or DEFAULT_ANALYSIS_PROMPT
-    client = genai.Client(api_key=api_key)
-    file  = await client.aio.files.upload(file=video_path)
+    client = genai.Client(vertexai=True)
+
+    # Prepare video part with mime type
+    video_part = genai.types.Part.from_bytes(
+        data=video_bytes,
+        mime_type="video/mp4"  # Adjust if your videos use different format
+    )
+    logger.info("📦 Prepared video part for Vertex AI")
 
     try:
-        # response = await client.chat.completions.create(
-        #     model=model,
-        #     messages=[
-        #         {"role": "system", "content": system_prompt},
-        #         {"role": "user", "content": content},
-        #     ],
-        #     temperature=temperature,
-        #     max_tokens=4096,
-        # )
-
-        # feedback = response.choices[0].message.content
-
         response = await client.aio.models.generate_content(
             model=model,
-            contents=[file, system_prompt],
+            contents=[video_part, system_prompt],
         )
 
         feedback = response.text
@@ -219,7 +222,6 @@ async def analyze_video(
 
         # feedback = (
         #     "This is a placeholder\n"
-        #     f"Converation analysis for video {video_path} with {len(frames)} frames.\n\n"
         #     f"Using video path: {video_path}\n"
         #     f" Transcript length: {len(transcript)} characters.\n\n"
         #     f"Transcript\n{transcript}..."

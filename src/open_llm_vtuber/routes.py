@@ -554,15 +554,15 @@ def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
                 status_code=400,
             )
 
-        if not analysis_config.api_key:
-            logger.warning("Video analysis API key is not configured")
-            return JSONResponse(
-                {
-                    "error": "Video analysis API key is not configured. "
-                    "Set video_analysis.api_key in conf.yaml"
-                },
-                status_code=400,
-            )
+        # if not analysis_config.api_key:
+        #     logger.warning("Video analysis API key is not configured")
+        #     return JSONResponse(
+        #         {
+        #             "error": "Video analysis API key is not configured. "
+        #             "Set video_analysis.api_key in conf.yaml"
+        #         },
+        #         status_code=400,
+        #     )
 
         # Build transcript from chat history
         transcript = ""
