@@ -1,3 +1,6 @@
+# during development, ignore prebuiltfrontend
+frontend/*
+
 # ignore the user configuration file
 conf.yaml
 privatekey.json
@@ -81,3 +84,4 @@ mcp_servers.json
 # vidoes
 presentation_videos/*
 recordings/*
+recorded_videos/*

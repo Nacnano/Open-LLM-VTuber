@@ -675,4 +675,84 @@ def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
                 status_code=500,
             )
 
+    @router.post("/analyze-presentation")
+    async def analyze_presentation_endpoint(
+        video_path: str = Form(...),
+    ):
+        """Analyze an uploaded presentation video using a Visual LLM.
+
+        This endpoint:
+        1. Validates the uploaded video file
+        2. Sends the video to the Visual LLM
+        3. Returns feedback
+
+        Args:
+            video_path: Path to the uploaded presentation video
+
+        Returns:
+            JSONResponse: Analysis feedback or error
+        """
+
+        logger.info(f"📊 Presentation analysis requested for: {video_path}")
+
+        # Validate file exists
+        if not Path(video_path).exists():
+            logger.warning(f"Video file not found: {video_path}")
+            return JSONResponse(
+                {"error": f"Video file not found: {video_path}"},
+                status_code=404,
+            )
+
+        # Load config
+        system_config = default_context_cache.system_config
+        analysis_config = system_config.video_analysis
+
+        if not analysis_config.enabled:
+            return JSONResponse(
+                {"error": "Video analysis is not enabled"},
+                status_code=400,
+            )
+
+        # 🚨 No transcript for presentation
+        transcript = "(No transcript provided for presentation)"
+
+        try:
+            feedback = await analyze_video(
+                video_path=video_path,
+                transcript=transcript,  # keep param for compatibility
+                base_url=analysis_config.base_url,
+                api_key=analysis_config.api_key,
+                model=analysis_config.model,
+
+                # ✅ reuse same prompt for now
+                analysis_prompt=analysis_config.analysis_prompt,
+
+                max_frames=analysis_config.max_frames,
+                temperature=analysis_config.temperature,
+            )
+
+            return JSONResponse(
+                {
+                    "status": "success",
+                    "feedback": feedback,
+                    "video_path": video_path,
+                    "mode": "presentation",
+                }
+            )
+
+        except FileNotFoundError as e:
+            logger.error(f"Video file not found: {e}")
+            return JSONResponse({"error": str(e)}, status_code=404)
+
+        except RuntimeError as e:
+            logger.error(f"Video analysis failed: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        except Exception as e:
+            logger.error(f"❌ Unexpected error: {e}")
+            return JSONResponse(
+                {"error": f"Video analysis failed: {str(e)}"},
+                status_code=500,
+            )
+
     return router
