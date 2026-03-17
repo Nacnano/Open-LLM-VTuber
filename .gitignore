@@ -77,3 +77,7 @@ private/
 mcp_servers.json
 
 .vscode/
+
+# vidoes
+presentation_videos/*
+recordings/*

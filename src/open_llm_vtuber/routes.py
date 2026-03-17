@@ -398,6 +398,55 @@ def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
             return JSONResponse(
                 {"error": f"Failed to save video: {str(e)}"}, status_code=500
             )
+        
+    @router.post("/upload-presentation")
+    async def upload_presentation(
+        file: UploadFile = File(...),
+    ):
+        try:
+            video_dir = Path("presentation_videos")
+            video_dir.mkdir(exist_ok=True)
+
+            # Validate file type
+            allowed_types = ["video/mp4", "video/webm", "video/mpeg"]
+            if file.content_type not in allowed_types:
+                return JSONResponse(
+                    {"error": "Invalid file type"},
+                    status_code=400,
+                )
+
+            # Generate filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = str(uuid4())[:8]
+            ext = file.filename.split(".")[-1]
+            filename = f"presentation_{timestamp}_{unique_id}.{ext}"
+            path = video_dir / filename
+
+            # Save file
+            contents = await file.read()
+
+            # Optional: size check
+            if len(contents) > 100 * 1024 * 1024:  # 100MB
+                return JSONResponse(
+                    {"error": "File too large"},
+                    status_code=413,
+                )
+
+            with open(path, "wb") as f:
+                f.write(contents)
+
+            return JSONResponse({
+                "status": "success",
+                "filename": filename,
+                "path": str(path),
+            })
+
+        except Exception as e:
+            return JSONResponse(
+                {"error": str(e)},
+                status_code=500,
+            )
+        
 
     @router.post("/asr")
     async def transcribe_audio(file: UploadFile = File(...)):
