@@ -14,56 +14,7 @@ from pathlib import Path
 from google import genai
 from loguru import logger
 
-# Default analysis prompt for IELTS-style conversation evaluation
-DEFAULT_ANALYSIS_PROMPT = """You are an expert conversation coach and IELTS examiner. 
-Analyze the following conversation recording between a student and an AI examiner.
-
-You are given:
-1. Extracted video frames showing the student during the conversation
-2. The full text transcript of the conversation
-
-Please provide detailed feedback on the student's conversational performance, including:
-
-## Overall Score (out of 9, IELTS band scale)
-
-## Fluency & Coherence
-- How smoothly did the student speak?
-- Were there noticeable pauses, hesitations, or repetitions?
-- Did the student organize their ideas logically?
-
-## Lexical Resource (Vocabulary)
-- Range and accuracy of vocabulary used
-- Use of idiomatic expressions or collocations
-- Any vocabulary errors or limitations
-
-## Grammatical Range & Accuracy
-- Variety of sentence structures used
-- Accuracy of grammar
-- Common grammatical errors noticed
-
-## Pronunciation & Delivery (based on video frames)
-- Overall confidence and composure
-- Vocal fillers or unnatural pauses observed
-
-## Body Language Analysis (based on video frames)
-- **Posture:** Is the student sitting/standing upright and engaged, or slouching/rigid?
-- **Facial Expressions:** Are expressions natural and congruent with the content being discussed?
-- **Eye Contact:** Does the student maintain appropriate eye contact or frequently look away?
-- **Gestures:** Does the student use hand gestures effectively to support their points?
-- **Nervous Habits:** Any visible signs of anxiety (fidgeting, touching face, shifting, etc.)?
-- **Overall Presence:** Rate the student's non-verbal communication on a scale of 1-9
-
-## Key Strengths
-- List 2-3 specific things the student did well
-
-## Areas for Improvement
-- List 2-3 specific areas to work on with actionable suggestions
-
-## Sample Improved Responses
-- Pick 1-2 of the student's weaker responses and provide improved versions
-
-Keep your feedback constructive, specific, and encouraging."""
-
+from .video_analyzer_prompts import DEFAULT_ANALYSIS_PROMPT
 
 def _extract_frames(video_path: str, max_frames: int = 8) -> list[str]:
     """Extract evenly-spaced frames from a video file as base64-encoded JPEGs.

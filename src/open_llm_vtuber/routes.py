@@ -15,6 +15,7 @@ from .chat_history_manager import get_history
 from .proxy_handler import ProxyHandler
 from .video_analyzer import analyze_video
 from .websocket_handler import WebSocketHandler
+from .video_analyzer_prompts import DEFAULT_PRESENTATION_ANALYSIS
 
 
 def get_duration(file_path: str) -> float | None:
@@ -725,7 +726,7 @@ def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
                 model=analysis_config.model,
 
                 # ✅ reuse same prompt for now
-                analysis_prompt=analysis_config.analysis_prompt,
+                analysis_prompt = DEFAULT_PRESENTATION_ANALYSIS,
 
                 max_frames=analysis_config.max_frames,
                 temperature=analysis_config.temperature,

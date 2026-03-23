@@ -65,6 +65,9 @@ class SystemConfig(I18nMixin):
     video_analysis: VideoAnalysisConfig = Field(
         default_factory=VideoAnalysisConfig, alias="video_analysis"
     )
+    presentation_analysis: VideoAnalysisConfig = Field(
+        default_factory=VideoAnalysisConfig, alias="presentation_analysis"
+    )
 
     DESCRIPTIONS: ClassVar[Dict[str, Description]] = {
         "conf_version": Description(en="Configuration version", zh="配置文件版本"),
@@ -92,6 +95,10 @@ class SystemConfig(I18nMixin):
         "video_analysis": Description(
             en="Configuration for post-meeting video analysis feedback",
             zh="会议后视频分析反馈的配置",
+        ),
+        "presentation_analysis": Description(
+            en="Configuration for post-meeting presentation analysis feedback",
+            zh="会议后演讲分析反馈的配置",
         ),
     }
 
