@@ -310,7 +310,11 @@ def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
 
                         # Merge Video and Audio using ffmpeg
                         # Output file
-                        merged_filename = f"recording_{timestamp}_{unique_id}.mp4"
+                        # merged_filename = f"recording_{timestamp}_{unique_id}.mp4"
+                        # merged_path = video_dir / merged_filename
+
+                        # 1. Change the output extension to .webm so we can copy the video stream instantly
+                        merged_filename = f"recording_{timestamp}_{unique_id}.webm"
                         merged_path = video_dir / merged_filename
 
                         logger.info(f"🔄 Merging video and audio to {merged_path}...")
@@ -327,26 +331,52 @@ def init_webtool_routes(ws_handler: WebSocketHandler) -> APIRouter:
 
                             # ffmpeg command to merge video and audio
                             # Use adelay filter to shift audio forward in time
+
+                            # using user voice from webcam video
+                            # command = [
+                            #     "ffmpeg",
+                            #     "-y",
+                            #     "-i", str(video_path),    # Input 0: User video (perfectly synced user audio)
+                            #     "-i", str(audio_path),    # Input 1: Backend stereo audio (Left=User, Right=LLM)
+                                
+                            #     "-filter_complex", 
+                            #     # 1. Grab the perfectly synced user audio from the video file
+                            #     "[0:a]pan=1c|c0=c0[left]; "
+                                
+                            #     # 2. THE FIX: Grab Channel 1 (c1) from the backend audio, which is the LLM's voice
+                            #     "[1:a]pan=1c|c0=c1[llm_only]; "
+                                
+                            #     # 3. Apply the delay to the LLM voice so it speaks at the correct time
+                            #     f"[llm_only]adelay=delays={audio_delay_ms}:all=1[right]; "
+                                
+                            #     # 4. Merge the Synced User (Left) and Delayed LLM (Right) into a single stereo track
+                            #     "[left][right]amerge=inputs=2[aout]",
+                                
+                            #     "-map", "0:v",            # Take the original video stream exactly as it is
+                            #     "-map", "[aout]",         # Take the newly corrected stereo audio stream
+                                
+                            #     "-c:v", "copy",           # Keep the fast processing (instant copy)
+                            #     "-c:a", "libopus",        # Encode audio to WebM-compatible format
+                            #     "-shortest",
+                            #     str(merged_path),
+                            # ]
+
+                            # using user voice from backend audio
                             command = [
                                 "ffmpeg",
-                                "-y",  # Overwrite output
-                                "-i",
-                                str(video_path),
-                                "-i",
-                                str(audio_path),
-                                "-c:v",
-                                "libx264",  # Encode video to H.264 for MP4 compatibility
-                                "-preset",
-                                "fast",
-                                "-crf",
-                                "22",
-                                "-af",
-                                f"adelay=delays={audio_delay_ms}:all=1",  # Delay audio to sync with video
-                                "-c:a",
-                                "aac",  # Encode audio to AAC
-                                "-b:a",
-                                "192k",
-                                "-shortest",  # Finish when shortest input ends
+                                "-y",
+                                "-i", str(video_path),    # Input 0: Video
+                                "-i", str(audio_path),    # Input 1: Backend Stereo Audio (L=User, R=LLM)
+                                
+                                # Push the entire audio track back by audio_delay_ms so the video can catch up
+                                "-filter_complex", f"[1:a]adelay=delays={audio_delay_ms}:all=1[aout]",
+                                
+                                "-map", "0:v",            # Take the video stream
+                                "-map", "[aout]",         # Take the delayed audio stream
+                                
+                                "-c:v", "copy",           # Still keeping the instant 1-second processing!
+                                "-c:a", "libopus",
+                                "-shortest",
                                 str(merged_path),
                             ]
 
