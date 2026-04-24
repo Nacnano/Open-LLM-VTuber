@@ -58,7 +58,6 @@
         "idleMotionGroupName": "Idle",
         "defaultEmotion": "Noworrie",
         "emotionMap": {
-    
             "angry": 0,
             "mad": 0,
             "outraged": 0,
@@ -66,6 +65,7 @@
             "disgusted": 0,
             "contempt": 0,
             "determined": 0,
+            "frustrated": 0,
 
             "sad": 1,
             "dejected": 1,
@@ -80,10 +80,11 @@
 
             "affectionate": 2,
             "flirtatious": 2,
+            "happy": 2,
+            "proud": 2,
+            "grateful": 2,
 
             "scared": 3,
-            "surprised": 3,
-            "frustrated": 3,
             "threatened": 3,
             "apologetic": 3,
             "hesitant": 3,
@@ -91,23 +92,7 @@
             "confused": 3,
             "anxious": 3,
             "panicked": 3,
-            "alarmed": 3,
-
-            "excited": 4,
-            "content": 4,
-            "happy": 4,
-            "enthusiastic": 4,
-            "elated": 4,
-            "euphoric": 4,
-            "triumphant": 4,
-            "joking/comedic": 4,
-            "peaceful": 4,
-            "serene": 4,
-            "calm": 4,
-            "grateful": 4,
-            "trust": 4,
-            "proud": 4,
-            "confident": 4
+            "alarmed": 3
         },
         "tapMotions": {}
     }

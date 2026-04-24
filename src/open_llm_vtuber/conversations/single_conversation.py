@@ -45,18 +45,25 @@ async def process_single_conversation(
     Returns:
         str: Complete response text
     """
+
+    websocket_lock = asyncio.Lock()
+    
+    async def safe_websocket_send(data: str):
+        async with websocket_lock:
+            await websocket_send(data)
+
     # Create TTSTaskManager for this conversation
     tts_manager = TTSTaskManager()
     full_response = ""  # Initialize full_response here
 
     try:
         # Send initial signals
-        await send_conversation_start_signals(websocket_send)
+        await send_conversation_start_signals(safe_websocket_send)
         logger.info(f"New Conversation Chain {session_emoji} started!")
 
         # Process user input
         input_text = await process_user_input(
-            user_input, context.asr_engine, websocket_send
+            user_input, context.asr_engine, safe_websocket_send
         )
 
         # Create batch input
@@ -98,7 +105,7 @@ async def process_single_conversation(
                     output_item["name"] = context.character_config.character_name
                     logger.debug(f"Sending tool status update: {output_item}")
 
-                    await websocket_send(json.dumps(output_item))
+                    await safe_websocket_send(json.dumps(output_item))
 
                 elif isinstance(output_item, (SentenceOutput, AudioOutput)):
                     # Handle SentenceOutput or AudioOutput
@@ -107,7 +114,7 @@ async def process_single_conversation(
                         character_config=context.character_config,
                         live2d_model=context.live2d_model,
                         tts_engine=context.tts_engine,
-                        websocket_send=websocket_send,  # Pass websocket_send for audio/tts messages
+                        websocket_send=safe_websocket_send,  # Pass safe_websocket_send for audio/tts messages
                         tts_manager=tts_manager,
                         translate_engine=context.translate_engine,
                         audio_recorder=context.audio_recorder,  # Pass audio recorder for recording
@@ -127,7 +134,7 @@ async def process_single_conversation(
             logger.exception(
                 f"Error processing agent response stream: {e}"
             )  # Log with stack trace
-            await websocket_send(
+            await safe_websocket_send(
                 json.dumps(
                     {
                         "type": "error",
@@ -141,11 +148,11 @@ async def process_single_conversation(
         # Wait for any pending TTS tasks
         if tts_manager.task_list:
             await asyncio.gather(*tts_manager.task_list)
-            await websocket_send(json.dumps({"type": "backend-synth-complete"}))
+            await safe_websocket_send(json.dumps({"type": "backend-synth-complete"}))
 
         await finalize_conversation_turn(
             tts_manager=tts_manager,
-            websocket_send=websocket_send,
+            websocket_send=safe_websocket_send,
             client_uid=client_uid,
         )
 
@@ -166,8 +173,9 @@ async def process_single_conversation(
         logger.info(f"🤡👍 Conversation {session_emoji} cancelled because interrupted.")
         raise
     except Exception as e:
-        logger.error(f"Error in conversation chain: {e}")
-        await websocket_send(
+        # logger.error(f"Error in conversation chain: {e}")
+        logger.exception(f"Error in conversation chain: {e}")
+        await safe_websocket_send(
             json.dumps({"type": "error", "message": f"Conversation error: {str(e)}"})
         )
         raise
