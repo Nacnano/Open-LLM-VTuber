@@ -56,6 +56,10 @@ async def process_single_conversation(
     tts_manager = TTSTaskManager()
     full_response = ""  # Initialize full_response here
 
+    import time
+    start_time = time.time()
+    first_response_time = None
+
     try:
         # Send initial signals
         await send_conversation_start_signals(safe_websocket_send)
@@ -97,6 +101,12 @@ async def process_single_conversation(
             agent_output_stream = context.agent_engine.chat(batch_input)
 
             async for output_item in agent_output_stream:
+                if first_response_time is None and isinstance(output_item, (SentenceOutput, AudioOutput)):
+                    first_response_time = time.time()
+                    latency = first_response_time - start_time
+                    logger.info(f"⏱️ AI response latency: {latency:.3f} seconds")
+                    context.turn_latencies.append(latency)
+
                 if (
                     isinstance(output_item, dict)
                     and output_item.get("type") == "tool_call_status"

@@ -76,6 +76,8 @@ class ServiceContext:
         # Audio recorder for dual-channel recording
         self.audio_recorder: AudioRecorder | None = None
 
+        self.turn_latencies: list[float] = []
+
     def __str__(self):
         return (
             f"ServiceContext:\n"
@@ -194,6 +196,12 @@ class ServiceContext:
     async def close(self):
         """Clean up resources, especially the MCPClient."""
         logger.info("Closing ServiceContext resources...")
+
+        if self.turn_latencies:
+            avg_latency = sum(self.turn_latencies) / len(self.turn_latencies)
+            import numpy as np
+            sd_latency = np.std(self.turn_latencies)
+            logger.info(f"📊 Session latency stats: {avg_latency:.3f}s ± {sd_latency:.3f}s (over {len(self.turn_latencies)} turns)")
 
         # Save recording if enabled and has audio
         if self.audio_recorder and self.audio_recorder.has_audio():
