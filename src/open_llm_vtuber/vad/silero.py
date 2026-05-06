@@ -17,7 +17,7 @@ class SileroVADConfig(BaseModel):
     prob_threshold: float = 0.4
     db_threshold: int = 60
     required_hits: int = 3  # 3 * (0.032) = 0.1s
-    required_misses: int = 24  # 24 * (0.032) = 0.8s
+    required_misses: int = 125  # 125 * (0.032) = 4.0s
     smoothing_window: int = 5
 
 
@@ -29,7 +29,7 @@ class VADEngine(VADInterface):
         prob_threshold: float = 0.4,
         db_threshold: int = 60,
         required_hits: int = 3,
-        required_misses: int = 24,
+        required_misses: int = 125,
         smoothing_window: int = 5,
     ):
         self.config = SileroVADConfig(

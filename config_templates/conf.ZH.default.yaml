@@ -473,7 +473,7 @@ character_config:
       prob_threshold: 0.4 # 语音活动检测的概率阈值
       db_threshold: 60 # 语音活动检测的分贝阈值
       required_hits: 3 # 连续命中次数以确认语音
-      required_misses: 24 # 连续未命中次数以确认静音
+      required_misses: 125 # 连续未命中次数以确认静音 (125 * 0.032s = 4.0s)
       smoothing_window: 5 # 语音活动检测的平滑窗口大小
 
   tts_preprocessor_config:

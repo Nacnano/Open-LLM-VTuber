@@ -12,7 +12,7 @@ class SileroVADConfig(I18nMixin):
     prob_threshold: float = Field(..., alias="prob_threshold")  # 0.4
     db_threshold: int = Field(..., alias="db_threshold")  # 60
     required_hits: int = Field(..., alias="required_hits")  # 3 * (0.032) = 0.1s
-    required_misses: int = Field(..., alias="required_misses")  # 24 * (0.032) = 0.8s
+    required_misses: int = Field(..., alias="required_misses")  # 125 * (0.032) = 4.0s
     smoothing_window: int = Field(..., alias="smoothing_window")  # 5
 
     DESCRIPTIONS: ClassVar[Dict[str, Description]] = {

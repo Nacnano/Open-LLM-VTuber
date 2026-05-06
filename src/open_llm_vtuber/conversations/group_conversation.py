@@ -1,29 +1,30 @@
-from typing import Any, Dict, List, Optional, Union
 import asyncio
 import json
-from loguru import logger
-from fastapi import WebSocket
+from typing import Any, Dict, List, Optional, Union
+
 import numpy as np
+from fastapi import WebSocket
+from loguru import logger
 
 from ..agent.output_types import AudioOutput, SentenceOutput
-
+from ..chat_history_manager import store_message
+from ..service_context import ServiceContext
+from ..utils.latency_tracker import LatencyTracker
 from .conversation_utils import (
+    EMOJI_LIST,
+    cleanup_conversation,
     create_batch_input,
+    finalize_conversation_turn,
     process_agent_output,
     process_user_input,
-    finalize_conversation_turn,
-    cleanup_conversation,
-    EMOJI_LIST,
 )
+from .tts_manager import TTSTaskManager
 from .types import (
+    BroadcastContext,
     BroadcastFunc,
     GroupConversationState,
-    BroadcastContext,
     WebSocketSend,
 )
-from ..service_context import ServiceContext
-from ..chat_history_manager import store_message
-from .tts_manager import TTSTaskManager
 
 
 async def process_group_conversation(
@@ -50,6 +51,12 @@ async def process_group_conversation(
         session_emoji: Emoji identifier for the conversation
         metadata: Optional metadata for special processing flags
     """
+    latency_tracker = None
+    if metadata:
+        tracker = metadata.get("latency_tracker")
+        if isinstance(tracker, LatencyTracker):
+            latency_tracker = tracker
+
     # Create TTSTaskManager for each member
     tts_managers = {uid: TTSTaskManager() for uid in group_members}
 
@@ -85,6 +92,7 @@ async def process_group_conversation(
             broadcast_func=broadcast_func,
             group_members=group_members,
             initiator_client_uid=initiator_client_uid,
+            latency_tracker=latency_tracker,
         )
 
         # Check if we should skip storing this input to history
@@ -105,7 +113,7 @@ async def process_group_conversation(
 
         state.conversation_history = [f"{human_name}: {input_text}"]
 
-        is_first_responder = False
+        is_first_responder = True
         # Main conversation loop
         while state.group_queue:
             try:
@@ -195,10 +203,27 @@ async def process_group_input(
     broadcast_func: BroadcastFunc,
     group_members: List[str],
     initiator_client_uid: str,
+    latency_tracker: LatencyTracker | None = None,
 ) -> str:
-    """Process and broadcast user input to group"""
+    """Process and broadcast user input to group.
+
+    Args:
+        user_input: Text or audio input from the user.
+        initiator_context: Service context for the initiating client.
+        initiator_ws_send: WebSocket send function for the initiator.
+        broadcast_func: Function to broadcast messages to group.
+        group_members: List of group member UIDs.
+        initiator_client_uid: UID of the initiating client.
+        latency_tracker: Optional latency tracker for this turn.
+
+    Returns:
+        str: Transcribed or original user input text.
+    """
     input_text = await process_user_input(
-        user_input, initiator_context.asr_engine, initiator_ws_send
+        user_input,
+        initiator_context.asr_engine,
+        initiator_ws_send,
+        latency_tracker=latency_tracker,
     )
     await broadcast_transcription(
         broadcast_func, group_members, input_text, initiator_client_uid
@@ -258,6 +283,13 @@ async def handle_group_member_turn(
         f"(client {current_member_uid}) receiving context:\n{new_context}"
     )
 
+    latency_tracker = None
+    if metadata:
+        tracker = metadata.get("latency_tracker")
+        if isinstance(tracker, LatencyTracker):
+            latency_tracker = tracker
+            tts_manager.latency_tracker = latency_tracker
+
     full_response = await process_member_response(
         context=context,
         batch_input=batch_input,
@@ -269,6 +301,9 @@ async def handle_group_member_turn(
 
     if tts_manager.task_list:
         await asyncio.gather(*tts_manager.task_list)
+        if latency_tracker:
+            latency_tracker.mark_once("tts_all_complete")
+            latency_tracker.mark_once("backend_synth_complete")
         await current_ws_send(json.dumps({"type": "backend-synth-complete"}))
 
         broadcast_ctx = BroadcastContext(
@@ -282,7 +317,11 @@ async def handle_group_member_turn(
             websocket_send=current_ws_send,
             client_uid=current_member_uid,
             broadcast_ctx=broadcast_ctx,
+            latency_tracker=latency_tracker,
         )
+
+    if latency_tracker:
+        tts_manager.latency_tracker = None
 
     if full_response:
         ai_message = f"{context.character_config.character_name}: {full_response}"

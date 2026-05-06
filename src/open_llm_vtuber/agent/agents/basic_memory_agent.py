@@ -1,33 +1,37 @@
 from typing import (
-    AsyncIterator,
-    List,
-    Dict,
     Any,
+    AsyncIterator,
     Callable,
+    Dict,
+    List,
     Literal,
-    Union,
     Optional,
+    Union,
 )
+
 from loguru import logger
-from .agent_interface import AgentInterface
-from ..output_types import SentenceOutput, DisplayText
-from ..stateless_llm.stateless_llm_interface import StatelessLLMInterface
+
+from prompts import prompt_loader
+
+from ...chat_history_manager import get_history
+from ...config_manager import TTSPreprocessorConfig
+from ...mcpp.json_detector import StreamJSONDetector
+from ...mcpp.tool_executor import ToolExecutor
+from ...mcpp.tool_manager import ToolManager
+from ...mcpp.types import ToolCallObject
+from ...utils.latency_tracker import LatencyTracker
+from ..input_types import BatchInput, TextSource
+from ..output_types import DisplayText, SentenceOutput
 from ..stateless_llm.claude_llm import AsyncLLM as ClaudeAsyncLLM
 from ..stateless_llm.openai_compatible_llm import AsyncLLM as OpenAICompatibleAsyncLLM
-from ...chat_history_manager import get_history
+from ..stateless_llm.stateless_llm_interface import StatelessLLMInterface
 from ..transformers import (
-    sentence_divider,
     actions_extractor,
-    tts_filter,
     display_processor,
+    sentence_divider,
+    tts_filter,
 )
-from ...config_manager import TTSPreprocessorConfig
-from ..input_types import BatchInput, TextSource
-from prompts import prompt_loader
-from ...mcpp.tool_manager import ToolManager
-from ...mcpp.json_detector import StreamJSONDetector
-from ...mcpp.types import ToolCallObject
-from ...mcpp.tool_executor import ToolExecutor
+from .agent_interface import AgentInterface
 
 
 class BasicMemoryAgent(AgentInterface):
@@ -287,10 +291,28 @@ class BasicMemoryAgent(AgentInterface):
 
         return messages
 
+    def _get_latency_tracker(
+        self, input_data: BatchInput
+    ) -> LatencyTracker | None:
+        """Extract latency tracker from input metadata.
+
+        Args:
+            input_data: Input payload for the current turn.
+
+        Returns:
+            LatencyTracker instance if present, otherwise None.
+        """
+        if input_data.metadata:
+            tracker = input_data.metadata.get("latency_tracker")
+            if isinstance(tracker, LatencyTracker):
+                return tracker
+        return None
+
     async def _claude_tool_interaction_loop(
         self,
         initial_messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
+        latency_tracker: LatencyTracker | None = None,
     ) -> AsyncIterator[Union[str, Dict[str, Any]]]:
         """Handle Claude interaction loop with tool support."""
         messages = initial_messages.copy()
@@ -299,6 +321,8 @@ class BasicMemoryAgent(AgentInterface):
         current_assistant_message_content = []
 
         while True:
+            if latency_tracker:
+                latency_tracker.mark_once("llm_start")
             stream = self._llm.chat_completion(messages, self._system, tools=tools)
             pending_tool_calls.clear()
             current_assistant_message_content.clear()
@@ -306,6 +330,8 @@ class BasicMemoryAgent(AgentInterface):
             async for event in stream:
                 if event["type"] == "text_delta":
                     text = event["text"]
+                    if text and latency_tracker:
+                        latency_tracker.mark_once("llm_ttft")
                     current_turn_text += text
                     yield text
                     if (
@@ -404,6 +430,7 @@ class BasicMemoryAgent(AgentInterface):
         self,
         initial_messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
+        latency_tracker: LatencyTracker | None = None,
     ) -> AsyncIterator[Union[str, Dict[str, Any]]]:
         """Handle OpenAI interaction with tool support."""
         messages = initial_messages.copy()
@@ -412,6 +439,8 @@ class BasicMemoryAgent(AgentInterface):
         current_system_prompt = self._system
 
         while True:
+            if latency_tracker:
+                latency_tracker.mark_once("llm_start")
             if self.prompt_mode_flag:
                 if self._mcp_prompt_string:
                     current_system_prompt = (
@@ -437,6 +466,8 @@ class BasicMemoryAgent(AgentInterface):
             async for event in stream:
                 if self.prompt_mode_flag:
                     if isinstance(event, str):
+                        if event and latency_tracker:
+                            latency_tracker.mark_once("llm_ttft")
                         current_turn_text += event
                         if self._json_detector:
                             potential_json = self._json_detector.process_chunk(event)
@@ -459,6 +490,8 @@ class BasicMemoryAgent(AgentInterface):
                         yield event
                 else:
                     if isinstance(event, str):
+                        if event and latency_tracker:
+                            latency_tracker.mark_once("llm_ttft")
                         current_turn_text += event
                         yield event
                     elif isinstance(event, list) and all(
@@ -598,6 +631,8 @@ class BasicMemoryAgent(AgentInterface):
             self.reset_interrupt()
             self.prompt_mode_flag = False
 
+            latency_tracker = self._get_latency_tracker(input_data)
+
             messages = self._to_messages(input_data)
             tools = None
             tool_mode = None
@@ -628,21 +663,31 @@ class BasicMemoryAgent(AgentInterface):
                     f"Starting Claude tool interaction loop with {len(tools)} tools."
                 )
                 async for output in self._claude_tool_interaction_loop(
-                    messages, tools if tools else []
+                    messages,
+                    tools if tools else [],
+                    latency_tracker=latency_tracker,
                 ):
                     yield output
+                if latency_tracker:
+                    latency_tracker.mark_once("llm_end")
                 return
             elif self._use_mcpp and tool_mode == "OpenAI":
                 logger.debug(
                     f"Starting OpenAI tool interaction loop with {len(tools)} tools."
                 )
                 async for output in self._openai_tool_interaction_loop(
-                    messages, tools if tools else []
+                    messages,
+                    tools if tools else [],
+                    latency_tracker=latency_tracker,
                 ):
                     yield output
+                if latency_tracker:
+                    latency_tracker.mark_once("llm_end")
                 return
             else:
                 logger.info("Starting simple chat completion.")
+                if latency_tracker:
+                    latency_tracker.mark_once("llm_start")
                 token_stream = self._llm.chat_completion(messages, self._system)
                 complete_response = ""
                 async for event in token_stream:
@@ -654,10 +699,14 @@ class BasicMemoryAgent(AgentInterface):
                     else:
                         continue
                     if text_chunk:
+                        if latency_tracker:
+                            latency_tracker.mark_once("llm_ttft")
                         yield text_chunk
                         complete_response += text_chunk
                 if complete_response:
                     self._add_message(complete_response, "assistant")
+                if latency_tracker:
+                    latency_tracker.mark_once("llm_end")
 
         return chat_with_memory
 

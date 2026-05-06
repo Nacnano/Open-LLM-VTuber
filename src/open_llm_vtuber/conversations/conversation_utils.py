@@ -1,19 +1,21 @@
 import asyncio
-import re
-from typing import Optional, Union, Any, List, Dict
-import numpy as np
 import json
+import re
+from typing import Any, Dict, List, Optional, Union
+
+import numpy as np
 from loguru import logger
 
-from ..message_handler import message_handler
-from .types import WebSocketSend, BroadcastContext
-from .tts_manager import TTSTaskManager
-from ..agent.output_types import SentenceOutput, AudioOutput
-from ..agent.input_types import BatchInput, TextData, ImageData, TextSource, ImageSource
+from ..agent.input_types import BatchInput, ImageData, ImageSource, TextData, TextSource
+from ..agent.output_types import AudioOutput, SentenceOutput
 from ..asr.asr_interface import ASRInterface
 from ..live2d_model import Live2dModel
+from ..message_handler import message_handler
 from ..tts.tts_interface import TTSInterface
+from ..utils.latency_tracker import LatencyTracker
 from ..utils.stream_audio import prepare_audio_payload
+from .tts_manager import TTSTaskManager
+from .types import BroadcastContext, WebSocketSend
 
 
 # Convert class methods to standalone functions
@@ -151,15 +153,33 @@ async def process_user_input(
     user_input: Union[str, np.ndarray],
     asr_engine: ASRInterface,
     websocket_send: WebSocketSend,
+    latency_tracker: LatencyTracker | None = None,
 ) -> str:
-    """Process user input, converting audio to text if needed"""
+    """Process user input, converting audio to text if needed.
+
+    Args:
+        user_input: Text input or raw audio samples.
+        asr_engine: ASR engine for transcription.
+        websocket_send: WebSocket send function.
+        latency_tracker: Optional latency tracker for this turn.
+
+    Returns:
+        str: The processed input text.
+    """
     if isinstance(user_input, np.ndarray):
         logger.info("Transcribing audio input...")
+        if latency_tracker:
+            latency_tracker.mark_once("asr_start")
         input_text = await asr_engine.async_transcribe_np(user_input)
+        if latency_tracker:
+            latency_tracker.mark_once("asr_end")
+            latency_tracker.mark_once("input_text_ready")
         await websocket_send(
             json.dumps({"type": "user-input-transcription", "text": input_text})
         )
         return input_text
+    if latency_tracker:
+        latency_tracker.mark_once("input_text_ready")
     return user_input
 
 
@@ -168,11 +188,24 @@ async def finalize_conversation_turn(
     websocket_send: WebSocketSend,
     client_uid: str,
     broadcast_ctx: Optional[BroadcastContext] = None,
+    latency_tracker: LatencyTracker | None = None,
 ) -> None:
-    """Finalize a conversation turn"""
+    """Finalize a conversation turn.
+
+    Args:
+        tts_manager: TTS task manager for this turn.
+        websocket_send: WebSocket send function.
+        client_uid: Client unique identifier.
+        broadcast_ctx: Optional broadcast context for group conversations.
+        latency_tracker: Optional latency tracker for this turn.
+    """
     if tts_manager.task_list:
         await asyncio.gather(*tts_manager.task_list)
         await websocket_send(json.dumps({"type": "backend-synth-complete"}))
+
+        if latency_tracker:
+            latency_tracker.mark_once("tts_all_complete")
+            latency_tracker.mark_once("backend_synth_complete")
 
         response = await message_handler.wait_for_response(
             client_uid, "frontend-playback-complete"
@@ -181,6 +214,9 @@ async def finalize_conversation_turn(
         if not response:
             logger.warning(f"No playback completion response from {client_uid}")
             return
+
+        if latency_tracker:
+            latency_tracker.mark_once("playback_complete")
 
     await websocket_send(json.dumps({"type": "force-new-message"}))
 
@@ -192,6 +228,9 @@ async def finalize_conversation_turn(
         )
 
     await send_conversation_end_signal(websocket_send, broadcast_ctx)
+
+    if latency_tracker and "playback_complete" in latency_tracker.marks:
+        logger.info(latency_tracker.format_report())
 
 
 async def send_conversation_end_signal(

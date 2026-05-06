@@ -1,20 +1,23 @@
 import asyncio
 import json
 import time
-from typing import Dict, Optional, Callable
+from typing import Callable, Dict, Optional
+from uuid import uuid4
 
 import numpy as np
 from fastapi import WebSocket
 from loguru import logger
 
+from prompts import prompt_loader
+
 from ..chat_group import ChatGroupManager
 from ..chat_history_manager import store_message
 from ..service_context import ServiceContext
+from ..utils.latency_tracker import LatencyTracker
+from .conversation_utils import EMOJI_LIST
 from .group_conversation import process_group_conversation
 from .single_conversation import process_single_conversation
-from .conversation_utils import EMOJI_LIST
 from .types import GroupConversationState
-from prompts import prompt_loader
 
 
 async def handle_conversation_trigger(
@@ -90,6 +93,15 @@ async def handle_conversation_trigger(
 
     images = data.get("images")
     session_emoji = np.random.choice(EMOJI_LIST)
+
+    latency_tracker = LatencyTracker(
+        conversation_id=str(uuid4()),
+        client_uid=client_uid,
+    )
+    if metadata is None:
+        metadata = {}
+    metadata["latency_tracker"] = latency_tracker
+    metadata["conversation_id"] = latency_tracker.conversation_id
 
     group = chat_group_manager.get_client_group(client_uid)
     if group and len(group.members) > 1:

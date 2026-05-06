@@ -10,6 +10,7 @@ from loguru import logger
 from ..agent.output_types import Actions, DisplayText
 from ..live2d_model import Live2dModel
 from ..tts.tts_interface import TTSInterface
+from ..utils.latency_tracker import LatencyTracker
 from ..utils.stream_audio import prepare_audio_payload
 from .types import WebSocketSend
 
@@ -17,7 +18,12 @@ from .types import WebSocketSend
 class TTSTaskManager:
     """Manages TTS tasks and ensures ordered delivery to frontend while allowing parallel TTS generation"""
 
-    def __init__(self) -> None:
+    def __init__(self, latency_tracker: LatencyTracker | None = None) -> None:
+        """Initialize TTS task manager.
+
+        Args:
+            latency_tracker: Optional latency tracker for this conversation turn.
+        """
         self.task_list: List[asyncio.Task] = []
         self._lock = asyncio.Lock()
         # Queue to store ordered payloads
@@ -27,6 +33,7 @@ class TTSTaskManager:
         # Counter for maintaining order
         self._sequence_counter = 0
         self._next_sequence_to_send = 0
+        self.latency_tracker = latency_tracker
 
     async def speak(
         self,
@@ -50,6 +57,8 @@ class TTSTaskManager:
             websocket_send: WebSocket send function
             audio_recorder: Optional AudioRecorder instance for dual-channel recording
         """
+        if self.latency_tracker:
+            self.latency_tracker.mark_once("tts_start")
         if len(re.sub(r'[\s.,!?،。！？\'"』」）】\s]+', "", tts_text)) == 0:
             logger.debug("Empty TTS text, sending silent display payload")
             # Get current sequence number for silent payload
@@ -109,6 +118,8 @@ class TTSTaskManager:
                 # Send payloads in order
                 while self._next_sequence_to_send in buffered_payloads:
                     next_payload = buffered_payloads.pop(self._next_sequence_to_send)
+                    if self._next_sequence_to_send == 0 and self.latency_tracker:
+                        self.latency_tracker.mark_once("tts_first_payload_sent")
                     await websocket_send(json.dumps(next_payload))
                     self._next_sequence_to_send += 1
 
@@ -150,6 +161,8 @@ class TTSTaskManager:
             tts_start_time = time.time()
 
             audio_file_path = await self._generate_audio(tts_engine, tts_text)
+            if self.latency_tracker and audio_file_path:
+                self.latency_tracker.mark_once("tts_first_audio_ready")
 
             # Record TTS audio if recording is enabled
             if audio_recorder and audio_file_path:

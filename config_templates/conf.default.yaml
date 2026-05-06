@@ -479,7 +479,7 @@ character_config:
       prob_threshold: 0.4 # Probability Threshold for VAD
       db_threshold: 60 # Decibel Threshold for VAD
       required_hits: 3 # Number of consecutive hits required to consider speech
-      required_misses: 24 # Number of consecutive misses required to consider silence
+      required_misses: 125 # Number of consecutive misses required to consider silence (125 * 0.032s = 4.0s)
       smoothing_window: 5 # Smoothing window size for VAD
 
   tts_preprocessor_config:

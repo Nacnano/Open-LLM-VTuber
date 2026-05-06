@@ -1,25 +1,26 @@
-from typing import Union, List, Dict, Any, Optional
 import asyncio
 import json
-from loguru import logger
-import numpy as np
+from typing import Any, Dict, List, Optional, Union
 
-from .conversation_utils import (
-    create_batch_input,
-    process_agent_output,
-    send_conversation_start_signals,
-    process_user_input,
-    finalize_conversation_turn,
-    cleanup_conversation,
-    EMOJI_LIST,
-)
-from .types import WebSocketSend
-from .tts_manager import TTSTaskManager
-from ..chat_history_manager import store_message
-from ..service_context import ServiceContext
+import numpy as np
+from loguru import logger
 
 # Import necessary types from agent outputs
-from ..agent.output_types import SentenceOutput, AudioOutput
+from ..agent.output_types import AudioOutput, SentenceOutput
+from ..chat_history_manager import store_message
+from ..service_context import ServiceContext
+from ..utils.latency_tracker import LatencyTracker
+from .conversation_utils import (
+    EMOJI_LIST,
+    cleanup_conversation,
+    create_batch_input,
+    finalize_conversation_turn,
+    process_agent_output,
+    process_user_input,
+    send_conversation_start_signals,
+)
+from .tts_manager import TTSTaskManager
+from .types import WebSocketSend
 
 
 async def process_single_conversation(
@@ -45,8 +46,14 @@ async def process_single_conversation(
     Returns:
         str: Complete response text
     """
+    latency_tracker = None
+    if metadata:
+        tracker = metadata.get("latency_tracker")
+        if isinstance(tracker, LatencyTracker):
+            latency_tracker = tracker
+
     # Create TTSTaskManager for this conversation
-    tts_manager = TTSTaskManager()
+    tts_manager = TTSTaskManager(latency_tracker=latency_tracker)
     full_response = ""  # Initialize full_response here
 
     try:
@@ -56,7 +63,10 @@ async def process_single_conversation(
 
         # Process user input
         input_text = await process_user_input(
-            user_input, context.asr_engine, websocket_send
+            user_input,
+            context.asr_engine,
+            websocket_send,
+            latency_tracker=latency_tracker,
         )
 
         # Create batch input
@@ -85,6 +95,7 @@ async def process_single_conversation(
         if images:
             logger.info(f"With {len(images)} images")
 
+        first_output_seen = False
         try:
             # agent.chat yields Union[SentenceOutput, Dict[str, Any]]
             agent_output_stream = context.agent_engine.chat(batch_input)
@@ -101,6 +112,9 @@ async def process_single_conversation(
                     await websocket_send(json.dumps(output_item))
 
                 elif isinstance(output_item, (SentenceOutput, AudioOutput)):
+                    if not first_output_seen and latency_tracker:
+                        latency_tracker.mark_once("agent_first_output")
+                        first_output_seen = True
                     # Handle SentenceOutput or AudioOutput
                     response_part = await process_agent_output(
                         output=output_item,
@@ -141,12 +155,16 @@ async def process_single_conversation(
         # Wait for any pending TTS tasks
         if tts_manager.task_list:
             await asyncio.gather(*tts_manager.task_list)
+            if latency_tracker:
+                latency_tracker.mark_once("tts_all_complete")
+                latency_tracker.mark_once("backend_synth_complete")
             await websocket_send(json.dumps({"type": "backend-synth-complete"}))
 
         await finalize_conversation_turn(
             tts_manager=tts_manager,
             websocket_send=websocket_send,
             client_uid=client_uid,
+            latency_tracker=latency_tracker,
         )
 
         if context.history_uid and full_response:  # Check full_response before storing
